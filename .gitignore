@@ -1,0 +1,10 @@
+.env
+__pycache__/
+*.pyc
+.DS_Store
+
+# uv / packaging
+.venv/
+dist/
+build/
+*.egg-info/

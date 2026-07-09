@@ -1,0 +1,61 @@
+# ByteDance-style department logo set — a real DAG run (independent, parallel).
+#
+# Run:  uv run generate-image --dag-file examples/bytedance-logos.yaml \
+#         -o ~/Desktop/bytedance-logos --concurrency 3
+# (or the launcher: ./generate.py --dag-file examples/bytedance-logos.yaml ...)
+#
+# 10 department logos in one shared visual language (rounded-square gradient
+# app-icon + white geometric glyph + department wordmark), each with its own
+# color + symbol. No edges here → all tasks run in parallel (bounded by
+# --concurrency and the per-provider rate limiter). Outputs land as
+# <name>.png, e.g. 01-engineering.png. Sample renders live in examples/bytedance-logos/.
+#
+# Want STYLE-LOCKED consistency instead of independent generations? Make one base
+# tile first and have every department restyle it (serial → parallel via @ref):
+#   - {id: 00-base, prompt: "...brand base tile..."}
+#   - {id: 01-engineering, refs: ["@00-base"], prompt: "restyle as Engineering..."}
+#   - {id: 02-product,     refs: ["@00-base"], prompt: "restyle as Product..."}
+# The "@00-base" ref makes each department depend on the base (img2img), so the
+# base renders first and the rest fan out from it.
+
+tasks:
+  - id: 01-engineering
+    name: 01-engineering
+    ratio: "1:1"
+    prompt: "Modern tech-company department logo in ByteDance-inspired visual language: a bold vibrant blue-to-cyan gradient rounded-square app icon with a minimal geometric white glyph of interlocking gears and code brackets, clean flat vector, playful yet professional, centered on a soft white background, crisp high-contrast edges; below the icon the department name 'Engineering' in a modern geometric sans-serif. No photorealism, no clutter."
+  - id: 02-product
+    name: 02-product
+    ratio: "1:1"
+    prompt: "Modern tech-company department logo in ByteDance-inspired visual language: a bold vibrant violet-to-magenta gradient rounded-square app icon with a minimal geometric white glyph of a rounded cube beside a glowing idea spark, clean flat vector, playful yet professional, centered on a soft white background, crisp high-contrast edges; below the icon the department name 'Product' in a modern geometric sans-serif. No photorealism, no clutter."
+  - id: 03-design
+    name: 03-design
+    ratio: "1:1"
+    prompt: "Modern tech-company department logo in ByteDance-inspired visual language: a bold vibrant pink-to-coral gradient rounded-square app icon with a minimal geometric white glyph of a pen nib and a bezier-curve node, clean flat vector, playful yet professional, centered on a soft white background, crisp high-contrast edges; below the icon the department name 'Design' in a modern geometric sans-serif. No photorealism, no clutter."
+  - id: 04-marketing
+    name: 04-marketing
+    ratio: "1:1"
+    prompt: "Modern tech-company department logo in ByteDance-inspired visual language: a bold vibrant orange-to-red gradient rounded-square app icon with a minimal geometric white glyph of a megaphone with a rising growth arrow, clean flat vector, playful yet professional, centered on a soft white background, crisp high-contrast edges; below the icon the department name 'Marketing' in a modern geometric sans-serif. No photorealism, no clutter."
+  - id: 05-sales
+    name: 05-sales
+    ratio: "1:1"
+    prompt: "Modern tech-company department logo in ByteDance-inspired visual language: a bold vibrant green-to-teal gradient rounded-square app icon with a minimal geometric white glyph of an upward chart arrow hitting a target, clean flat vector, playful yet professional, centered on a soft white background, crisp high-contrast edges; below the icon the department name 'Sales' in a modern geometric sans-serif. No photorealism, no clutter."
+  - id: 06-hr
+    name: 06-hr
+    ratio: "1:1"
+    prompt: "Modern tech-company department logo in ByteDance-inspired visual language: a bold vibrant teal-to-emerald gradient rounded-square app icon with a minimal geometric white glyph of two abstract people figures with a small heart, clean flat vector, playful yet professional, centered on a soft white background, crisp high-contrast edges; below the icon the department name 'People' in a modern geometric sans-serif. No photorealism, no clutter."
+  - id: 07-finance
+    name: 07-finance
+    ratio: "1:1"
+    prompt: "Modern tech-company department logo in ByteDance-inspired visual language: a bold vibrant deep-blue-to-indigo gradient rounded-square app icon with a minimal geometric white glyph of a stack of coins beside a bar chart, clean flat vector, playful yet professional, centered on a soft white background, crisp high-contrast edges; below the icon the department name 'Finance' in a modern geometric sans-serif. No photorealism, no clutter."
+  - id: 08-legal
+    name: 08-legal
+    ratio: "1:1"
+    prompt: "Modern tech-company department logo in ByteDance-inspired visual language: a bold vibrant indigo-to-blue gradient rounded-square app icon with a minimal geometric white glyph of a balanced scale of justice inside a shield, clean flat vector, playful yet professional, centered on a soft white background, crisp high-contrast edges; below the icon the department name 'Legal' in a modern geometric sans-serif. No photorealism, no clutter."
+  - id: 09-operations
+    name: 09-operations
+    ratio: "1:1"
+    prompt: "Modern tech-company department logo in ByteDance-inspired visual language: a bold vibrant slate-blue-to-cyan gradient rounded-square app icon with a minimal geometric white glyph of interlocking circular arrows around a gear, clean flat vector, playful yet professional, centered on a soft white background, crisp high-contrast edges; below the icon the department name 'Operations' in a modern geometric sans-serif. No photorealism, no clutter."
+  - id: 10-data
+    name: 10-data
+    ratio: "1:1"
+    prompt: "Modern tech-company department logo in ByteDance-inspired visual language: a bold vibrant cyan-to-blue gradient rounded-square app icon with a minimal geometric white glyph of a connected node graph with a small bar chart, clean flat vector, playful yet professional, centered on a soft white background, crisp high-contrast edges; below the icon the department name 'Data' in a modern geometric sans-serif. No photorealism, no clutter."

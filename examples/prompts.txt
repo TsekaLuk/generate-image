@@ -1,0 +1,6 @@
+# examples/prompts.txt — batch mode (a zero-edge DAG): one independent image per line.
+# Blank lines and lines starting with '#' are skipped.
+# Run:  ./generate.py --batch-file examples/prompts.txt --concurrency 3
+a red panda astronaut floating in space, studio lighting
+a cozy bookshop in the rain, warm window light, flat vector
+a minimalist mountain sunrise, two-color risograph

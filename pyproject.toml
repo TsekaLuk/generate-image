@@ -1,0 +1,29 @@
+[project]
+name = "generate-image"
+version = "2.0.0"
+description = "One-command multi-provider image generation (openai / 302ai / openrouter / siliconflow) with img2img, multi-image compositing, and a DAG scheduler."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "httpx>=0.27",
+    "tenacity>=8.2",
+    "pyyaml>=6.0",
+]
+
+[project.scripts]
+generate-image = "generate_image.cli:main"
+generate-image-models = "generate_image.list_models:main"
+generate-image-probe = "generate_image.probe:main"
+generate-image-doctor = "generate_image.doctor:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/generate_image"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+]
