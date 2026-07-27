@@ -3,7 +3,7 @@
 Exercises provider_generate against an injected httpx.MockTransport and asserts
 that HTTP errors / network faults surface as ProviderError with the correct
 `.retryable` / `.retry_after` / `.status`, per the billing-aware rules in
-reliability.is_retryable_status. `302ai` is the representative billing provider
+reliability.is_retryable_status. `openai` is the representative billing provider
 (bills_on_failure=True, supports_idempotency=True).
 """
 
@@ -19,7 +19,7 @@ from generate_image import cli as generate
 from generate_image.providers import PROVIDERS
 from generate_image.reliability import ProviderError, build_client
 
-BILLING = PROVIDERS["302ai"]
+OPENAI = PROVIDERS["openai"]
 
 _TINY_PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
@@ -31,7 +31,7 @@ def _client(handler) -> httpx.Client:
 
 
 def _gen(client):
-    return generate.provider_generate(BILLING, "p", "gpt-image-2", "16:9", "key", client)
+    return generate.provider_generate(OPENAI, "p", "gpt-image-2", "16:9", "key", client)
 
 
 def test_http_401_is_non_retryable():
@@ -45,7 +45,7 @@ def test_http_401_is_non_retryable():
     assert ei.value.status == 401
 
 
-def test_http_500_is_retryable_because_302ai_supports_idempotency():
+def test_http_500_is_retryable_because_openai_supports_idempotency():
     def handler(req):
         return httpx.Response(500, text="server exploded")
 

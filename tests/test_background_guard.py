@@ -89,3 +89,14 @@ def test_guard_only_fires_for_listed_models():
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+def test_volcengine_blacklists_every_seedream_model():
+    """The one built-in provider that really refuses --background.
+
+    Ark rejects the parameter for the whole Seedream line, so every selectable
+    model must be listed — otherwise a model choice silently bypasses the guard
+    and the refusal only surfaces as a billed HTTP error.
+    """
+    p = PROVIDERS["volcengine"]
+    assert p.background_unsupported == p.models

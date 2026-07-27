@@ -190,6 +190,7 @@ def run_dag(tasks: list[Task],
                 refs = resolve_refs(task, results)
             raw = execute(task, refs)
             path = out_dir / f"{task.name or task.id}.png"
+            path.parent.mkdir(parents=True, exist_ok=True)
             writer(path, raw)
             with lock:
                 results[node_id] = TaskResult(SUCCESS, output_path=str(path))

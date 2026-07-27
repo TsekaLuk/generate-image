@@ -27,8 +27,8 @@ def _success_response() -> httpx.Response:
 
 
 @pytest.fixture(autouse=True)
-def _default_key_env(monkeypatch):
-    """Batch exercises the default (openai) provider; ensure require_key never sys.exits."""
+def _openai_key_env(monkeypatch):
+    """Batch exercises the openai provider; ensure require_key never sys.exits."""
     monkeypatch.setenv("OPENAI_API_KEY", "test-key-not-real")
 
 

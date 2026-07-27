@@ -34,7 +34,7 @@ def _install(monkeypatch, handler):
 
 
 @pytest.fixture(autouse=True)
-def _default_key(monkeypatch):
+def _openai_key(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "test-key-not-real")
 
 
@@ -67,13 +67,13 @@ def test_dry_run_single_no_call_no_key(tmp_path, monkeypatch, capsys):
         raise AssertionError("no network must happen under --dry-run")
 
     _install(monkeypatch, handler)
-    monkeypatch.setattr(sys, "argv", ["g", "一只猫", "--dry-run", "-r", "9:16"])
+    monkeypatch.setattr(sys, "argv", ["g", "一只猫", "-p", "302ai", "--dry-run", "-r", "9:16"])
     assert _run_main() == 0
     err = capsys.readouterr().err
-    assert "openai" in err
+    assert "302ai" in err
     assert "9:16" in err
     assert "billed call" in err
-    assert "cost varies for openai" in err  # openai is not in the fixed cost map
+    assert "≈" in err and "¥0.1" in err
     assert "→ spent:" not in err  # dry-run spends nothing (plan shows '→ cost:' only)
 
 
@@ -263,15 +263,15 @@ def test_dry_run_json_emits_plan_to_stdout(tmp_path, monkeypatch, capsys):
         raise AssertionError("no network under --dry-run")
 
     _install(monkeypatch, handler)
-    monkeypatch.setattr(sys, "argv", ["g", "cat", "--dry-run", "--json", "-r", "1:1"])
+    monkeypatch.setattr(sys, "argv", ["g", "cat", "-p", "302ai", "--dry-run", "--json", "-r", "1:1"])
     assert _run_main() == 0
     cap = capsys.readouterr()
     obj = json.loads(cap.out.strip())            # machine-readable plan on stdout
     assert obj["mode"] == "single"
-    assert obj["provider"] == "openai"
+    assert obj["provider"] == "302ai"
     assert obj["ratio"] == "1:1"
     assert obj["images"] == 1
-    assert obj["estimated_cost_cny"] is None  # openai has no fixed per-image price
+    assert obj["estimated_cost_cny"] == 0.1
     assert cap.out.strip().startswith("{")       # clean JSON, banner stays on stderr
 
 
@@ -370,7 +370,7 @@ def test_json_batch_all_fail_still_emits_array(tmp_path, monkeypatch, capsys):
 
 def test_metadata_background_transparent(tmp_path, monkeypatch):
     out = tmp_path / "out"
-    # 302ai's gpt-image-2 allows --background; give it a key.
+    # 302ai's gpt-image-2 allows --background (openai's does not); give it a key.
     monkeypatch.setenv("AI302_API_KEY", "test-key-not-real")
     _install(monkeypatch, lambda req: _success_response())
     monkeypatch.setattr(sys, "argv", [

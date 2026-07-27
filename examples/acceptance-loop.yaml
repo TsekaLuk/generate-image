@@ -1,0 +1,59 @@
+# Bounded generate -> review -> refine loop.
+#
+# One OPENAI_API_KEY serves both image generation and the OpenAI-compatible vision
+# judge. Every pass costs one image call plus one chat review call, so this sample
+# hard-stops before a fifth billed request even if the judge never accepts.
+
+version: 1
+entry: generate
+
+limits:
+  max_steps: 8
+  max_billed_calls: 4
+  max_visits:
+    generate: 2
+
+state:
+  prompt: >-
+    A clean editorial product poster for a matte-black mechanical keyboard,
+    centered three-quarter view, one cyan accent key, white seamless background,
+    crisp studio lighting, no text, no logos, 16:9 composition.
+
+services:
+  judge:
+    provider: openai
+    model: gpt-5.4-mini
+    json_mode: true
+
+nodes:
+  generate:
+    type: image.generate
+    provider: openai
+    model: gpt-image-2
+    ratio: "16:9"
+    prompt: "${state.prompt}"
+
+  review:
+    type: image.review
+    service: judge
+    image: "@generate"
+    prompt: "${state.prompt}"
+    threshold: 0.85
+    criteria:
+      - The entire keyboard is visible and is the clear primary subject.
+      - Exactly one keycap is cyan; the remaining keycaps are matte black.
+      - The background is clean white with no text, logos, or extra objects.
+      - The image reads as a polished 16:9 editorial product poster.
+
+  refine:
+    type: prompt.refine
+    prompt: "${nodes.review.revised_prompt}"
+
+edges:
+  - {from: generate, route: success, to: review}
+  - {from: generate, route: error, to: failed}
+  - {from: review, route: accepted, to: done}
+  - {from: review, route: rejected, to: refine}
+  - {from: review, route: error, to: failed}
+  - {from: refine, route: success, to: generate}
+  - {from: refine, route: error, to: failed}

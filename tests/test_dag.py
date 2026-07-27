@@ -110,6 +110,16 @@ def test_static_refs_are_passed_through(tmp_path):
     assert rec.refs_for("A") == ["/tmp/literal.png", "https://x.test/y.png"]
 
 
+def test_task_name_may_create_nested_output_directories(tmp_path):
+    tasks = [Task("A", "p", name="symbols/01-mark")]
+
+    results = run_dag(tasks, _Recorder(), out_dir=tmp_path)
+
+    assert results["A"].status == SUCCESS
+    assert results["A"].output_path == str(tmp_path / "symbols/01-mark.png")
+    assert (tmp_path / "symbols/01-mark.png").read_bytes() == b"img-A"
+
+
 # --- serial-then-parallel + independent ---------------------------------------
 
 def test_serial_then_parallel_A_before_BCD(tmp_path):

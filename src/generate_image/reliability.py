@@ -122,14 +122,22 @@ def retry_after_seconds(headers: Mapping[str, str]) -> float | None:
 # --- retry / backoff ----------------------------------------------------------
 
 def backoff_delay(attempt: int, *, base: float = BACKOFF_BASE,
-                  cap: float = BACKOFF_CAP, rng: random.Random | None = None) -> float:
-    """Full-jitter exponential backoff: uniform(0, min(cap, base * 2**(attempt-1))).
+                  cap: float = BACKOFF_CAP, rng: random.Random | None = None,
+                  floor: float = 0.0) -> float:
+    """Full-jitter exponential backoff: uniform(floor, min(cap, base * 2**(attempt-1))).
 
     `attempt` is 1-based (1 = first retry). AWS "exponential backoff and jitter".
+
+    `floor` raises the lower bound for gateways that cut the connection on
+    back-to-back requests — there, a jittered wait of ~0s reproduces the very
+    failure being retried. It also lifts the ceiling when needed so the window
+    never inverts.
     """
     r = rng or random
     ceiling = min(cap, base * (2 ** max(0, attempt - 1)))
-    return r.uniform(0, ceiling)
+    if floor > 0:
+        ceiling = max(ceiling, floor)
+    return r.uniform(min(floor, ceiling), ceiling)
 
 
 def new_idempotency_key() -> str:
@@ -141,7 +149,8 @@ def new_idempotency_key() -> str:
 def call_with_retry(fn: Callable[[], object], *, max_attempts: int,
                     sleep: Callable[[float], None] = time.sleep,
                     rng: random.Random | None = None,
-                    before_sleep: Callable[[object], None] | None = None) -> object:
+                    before_sleep: Callable[[object], None] | None = None,
+                    backoff_floor: float = 0.0) -> object:
     """Call `fn` with bounded retries. Retries only on ProviderError.retryable.
     Waits Retry-After when present, otherwise full-jitter exponential backoff.
     Re-raises the last exception once attempts are exhausted.
@@ -157,7 +166,7 @@ def call_with_retry(fn: Callable[[], object], *, max_attempts: int,
         exc = retry_state.outcome.exception()
         if isinstance(exc, ProviderError) and exc.retry_after is not None:
             return exc.retry_after
-        return backoff_delay(retry_state.attempt_number, rng=rng)
+        return backoff_delay(retry_state.attempt_number, rng=rng, floor=backoff_floor)
 
     retryer = Retrying(
         retry=retry_if_exception(_retry_predicate),

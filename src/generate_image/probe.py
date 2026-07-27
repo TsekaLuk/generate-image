@@ -8,7 +8,7 @@ Answers, with hard data, questions the docs can only claim:
 
 It drives the REAL `provider_generate` path, so each provider's own dialect is
 exercised (openai/302 = OpenAI `size`; openrouter = /v1/images; siliconflow =
-`image_size`), and reports the actual pixel dimensions decoded from the returned
+`image_size`; volcengine = Ark `size: 2K`), and reports the actual pixel dimensions decoded from the returned
 image. Generic across the whole registry — not tied to any one provider.
 
 Usage:

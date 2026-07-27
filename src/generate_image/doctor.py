@@ -23,7 +23,8 @@ import sys
 
 from . import cli
 from .probe import image_dims
-from .providers import PROVIDERS, DEFAULT_PROVIDER, resolve_provider
+from .providers import (PROVIDERS, AUTO_PROVIDER, DEFAULT_PROVIDER, ROUTER_PRIORITY,
+                        resolve_provider, route_provider)
 from .reliability import ProviderError
 
 _PROBE_PROMPT = "a single flat minimalist red circle centered on a plain white background, vector"
@@ -56,12 +57,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def _report_config(keyed: dict[str, bool]) -> None:
     """Print the per-provider key/config table to stdout; fill `keyed` in place."""
     print(f"generate-image doctor — {len(PROVIDERS)} providers "
-          f"(default: {DEFAULT_PROVIDER})\n")
+          f"(default: {AUTO_PROVIDER})\n")
     for name, base in PROVIDERS.items():
         p = resolve_provider(name)  # reflect {PREFIX}_BASE_URL / _DEFAULT_MODEL overrides
         has_key = _key_is_set(p.key_env)
         keyed[name] = has_key
-        tag = "  (default)" if name == DEFAULT_PROVIDER else ""
+        tag = "  (preferred by auto)" if name == ROUTER_PRIORITY[0] else ""
         status = "SET" if has_key else "MISSING"
         img2img = base.edit_style if base.edit_path else "none"
         print(f"■ {name}{tag}")
@@ -78,11 +79,17 @@ def _print_summary(keyed: dict[str, bool]) -> None:
     have = sum(1 for ok in keyed.values() if ok)
     print(f"{have}/{len(PROVIDERS)} providers have a key configured")
 
+    try:
+        selected = route_provider()
+    except ValueError:
+        print("auto route: UNAVAILABLE (no configured provider has a usable endpoint)")
+    else:
+        print(f"auto route: {selected.name} ({selected.default_model})")
+
     if not keyed.get(DEFAULT_PROVIDER, False):
         dp = PROVIDERS[DEFAULT_PROVIDER]
         print(
-            f"\nhint: the DEFAULT provider ({DEFAULT_PROVIDER}) has NO key — image "
-            f"generation will fail out of the box.\n"
+            f"\nhint: the primary fallback provider ({DEFAULT_PROVIDER}) has NO key.\n"
             f"  Set {dp.key_env}=... in a .env at the project root (see .env.example) "
             f"or export it in your shell."
         )

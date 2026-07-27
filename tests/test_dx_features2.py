@@ -40,7 +40,6 @@ def _clean_env(monkeypatch):
     for k in ("GENIMAGE_PROVIDER", "GENIMAGE_RATIO", "GENIMAGE_OUTPUT_DIR"):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setenv("OPENAI_API_KEY", "test-key-not-real")
-    monkeypatch.setenv("AI302_API_KEY", "test-key-not-real")
 
 
 def _run_main() -> int:
@@ -180,6 +179,62 @@ def test_count_json_is_array(tmp_path, monkeypatch, capsys):
     assert arr[1]["path"].endswith("pic_2.png")
 
 
+def test_volcengine_sequential_writes_all_images_from_one_call(
+        tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("ARK_API_KEY", "k")
+    calls = {"n": 0, "body": None}
+
+    def handler(req):
+        if req.method == "GET":
+            return httpx.Response(200, content=_TINY_PNG)
+        calls["n"] += 1
+        calls["body"] = json.loads(req.content)
+        return httpx.Response(200, json={
+            "created": 1784797893,
+            "data": [
+                {"size": "2048x2048", "url": "https://ark.test/1.png"},
+                {"size": "2048x2048", "url": "https://ark.test/2.png"},
+            ],
+            "model": "doubao-seedream-5-0-260128",
+            "usage": {"generated_images": 2, "output_tokens": 32768, "total_tokens": 32768},
+        })
+
+    _install(monkeypatch, handler)
+    out = tmp_path / "out"
+    monkeypatch.setattr(sys, "argv", [
+        "g", "two panels", "-p", "volcengine", "--sequential", "--max-images", "2",
+        "-o", str(out), "-n", "story", "--no-preview", "--json",
+    ])
+
+    assert _run_main() == 0
+    result = json.loads(capsys.readouterr().out)
+    assert calls["n"] == 1
+    assert calls["body"]["sequential_image_generation"] == "auto"
+    assert len(result) == 2
+    assert (out / "story_1.png").exists()
+    assert (out / "story_2.png").exists()
+
+
+def test_sequential_rejected_for_non_ark_provider(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["g", "x", "--sequential"])
+    with pytest.raises(SystemExit, match="only supported by -p volcengine"):
+        generate.main()
+
+
+def test_sequential_dry_run_reports_max_outputs_and_one_request(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", [
+        "g", "four panels", "-p", "volcengine", "--sequential",
+        "--max-images", "4", "--dry-run", "--json",
+    ])
+    generate.main()
+    captured = capsys.readouterr()
+    plan = json.loads(captured.out)
+    assert plan["mode"] == "sequential"
+    assert plan["images_max"] == 4
+    assert plan["requests"] == 1
+    assert "up to 4 (1 sequential request)" in captured.err
+
+
 def test_count_one_keeps_single_object_and_unsuffixed_name(tmp_path, monkeypatch, capsys):
     out = tmp_path / "out"
     _install(monkeypatch, lambda req: _success_response())
@@ -253,6 +308,7 @@ def test_count_mid_sequence_failure_reports_spent(tmp_path, monkeypatch, capsys)
             return httpx.Response(400, text="bad")
         return _success_response()
 
+    monkeypatch.setenv("AI302_API_KEY", "k")
     _install(monkeypatch, handler)
     monkeypatch.setattr(sys, "argv", [
         "g", "x", "-p", "302ai", "-o", str(out), "-n", "pic", "--no-preview", "--count", "3",
@@ -267,7 +323,9 @@ def test_count_mid_sequence_failure_reports_spent(tmp_path, monkeypatch, capsys)
 
 def test_count_dry_run_reflects_n(tmp_path, monkeypatch, capsys):
     _install(monkeypatch, lambda req: (_ for _ in ()).throw(AssertionError("no net")))
-    monkeypatch.setattr(sys, "argv", ["g", "cat", "-p", "302ai", "--dry-run", "--count", "4", "--json"])
+    # priced against 302ai: the official API is billed in USD, so it reports "varies"
+    monkeypatch.setattr(sys, "argv", ["g", "cat", "-p", "302ai",
+                                      "--dry-run", "--count", "4", "--json"])
     assert _run_main() == 0
     cap = capsys.readouterr()
     assert "4" in cap.err and "billed call" in cap.err
@@ -417,7 +475,7 @@ def test_env_invalid_provider_warns_and_falls_back(tmp_path, monkeypatch, capsys
     assert _run_main() == 0
     err = capsys.readouterr().err
     assert "GENIMAGE_PROVIDER" in err          # one-line warning
-    assert "→ provider: openai" in err         # built-in default used
+    assert "→ provider: openai" in err            # built-in default used
 
 
 def test_env_default_ratio(tmp_path, monkeypatch, capsys):
@@ -450,8 +508,10 @@ def test_env_output_dir(tmp_path, monkeypatch):
 # --- (F) cost summary ---------------------------------------------------------
 
 def test_cost_summary_single_302ai(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("AI302_API_KEY", "k")
     _install(monkeypatch, lambda req: _success_response())
-    monkeypatch.setattr(sys, "argv", ["g", "x", "-p", "302ai", "-o", str(tmp_path / "o"), "-n", "p", "--no-preview"])
+    monkeypatch.setattr(sys, "argv", ["g", "x", "-p", "302ai",
+                                      "-o", str(tmp_path / "o"), "-n", "p", "--no-preview"])
     assert _run_main() == 0
     err = capsys.readouterr().err
     assert "→ spent:" in err
@@ -459,9 +519,11 @@ def test_cost_summary_single_302ai(tmp_path, monkeypatch, capsys):
 
 
 def test_cost_summary_count(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("AI302_API_KEY", "k")
     _install(monkeypatch, lambda req: _success_response())
     monkeypatch.setattr(sys, "argv", [
-        "g", "x", "-p", "302ai", "-o", str(tmp_path / "o"), "-n", "p", "--no-preview", "--count", "3",
+        "g", "x", "-p", "302ai", "-o", str(tmp_path / "o"), "-n", "p", "--no-preview",
+        "--count", "3",
     ])
     assert _run_main() == 0
     err = capsys.readouterr().err
@@ -482,9 +544,11 @@ def test_cost_summary_varies_for_openrouter(tmp_path, monkeypatch, capsys):
 
 def test_cost_summary_batch_302ai(tmp_path, monkeypatch, capsys):
     bf = _write_batch(tmp_path, ["one", "two"])
+    monkeypatch.setenv("AI302_API_KEY", "k")
     _install(monkeypatch, lambda req: _success_response())
     monkeypatch.setattr(sys, "argv", [
-        "g", "-p", "302ai", "--batch-file", str(bf), "-o", str(tmp_path / "o"), "-n", "b", "--no-preview",
+        "g", "--batch-file", str(bf), "-p", "302ai",
+        "-o", str(tmp_path / "o"), "-n", "b", "--no-preview",
     ])
     assert _run_main() == 0
     err = capsys.readouterr().err

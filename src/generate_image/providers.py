@@ -2,12 +2,14 @@
 
 Each `Provider` is one OpenAI-compatible (or near-compatible) image backend.
 `openai` is the official OpenAI Images API (default); `302ai` / `openrouter` /
-`siliconflow` are public relays/clouds. Fields group into:
+`siliconflow` / `volcengine` / `147ai` are public relays/clouds. Fields group into:
 
   * routing        — base_url, gen_path, edit_path
   * protocol dialect — size_style (how aspect is requested), edit_style (how
     img2img is shaped). Response shape is normalized in generate.extract_image_bytes.
-  * model catalog  — default_model, models (advisory; unknown => warn + send)
+  * model catalog  — default_model, models (advisory; unknown => warn + send),
+    plus model_dialects for gateways that front several upstream protocols on one
+    base_url (147ai: Gemini via chat/completions, gpt-image via /v1/images/*)
   * reliability    — bills_on_failure, supports_idempotency, rpm, max_retries,
     default_concurrency (consumed by reliability.py)
 
@@ -26,8 +28,12 @@ import dataclasses
 import os
 from dataclasses import dataclass
 
-VALID_EDIT_STYLES = frozenset({"multipart", "chat_image", "image_prompt"})
-VALID_SIZE_STYLES = frozenset({"openai", "wxh"})
+VALID_GEN_STYLES = frozenset({"openai", "ark", "chat_image_config"})
+VALID_EDIT_STYLES = frozenset({
+    "multipart", "chat_image", "image_prompt", "ark_json", "chat_image_config",
+})
+VALID_SIZE_STYLES = frozenset({"openai", "wxh", "ark", "image_config", "openai_xl"})
+AUTO_PROVIDER = "auto"
 
 
 @dataclass(frozen=True)
@@ -38,6 +44,7 @@ class Provider:
     base_url: str
     key_env: str
     gen_path: str
+    gen_style: str                  # generation request dialect (see VALID_GEN_STYLES)
     edit_path: str | None            # None => no image-to-image support at all
     edit_style: str | None           # how img2img is shaped (see VALID_EDIT_STYLES)
     size_style: str | None           # how aspect/size is requested (see VALID_SIZE_STYLES)
@@ -51,6 +58,24 @@ class Provider:
     default_concurrency: int         # starting concurrency for batch mode
     max_ref_images: int              # how many --ref images img2img accepts (0 = no edit)
     supports_seed: bool              # honors a `seed` param for reproducible output
+    # Re-issue a request whose CONNECTION broke mid-flight (SSL EOF / reset), even
+    # when bills_on_failure and there is no idempotency key. Set this only where the
+    # failure is known to be billed anyway, so not retrying costs the same and just
+    # loses the image. Read timeouts are unaffected — they stay conservative.
+    retry_broken_transport: bool = False
+    # Minimum seconds between a failure and its retry. Default 0 keeps standard
+    # full-jitter backoff (which can wait ~0s). Raise it where an immediate retry
+    # would just reproduce a rate-induced failure.
+    backoff_floor: float = 0.0
+    # Some gateways front several upstreams with DIFFERENT protocols on one base_url
+    # (147ai: Gemini via chat/completions, gpt-image via /v1/images/*). Each entry is
+    # (model_prefix, {field: value}) applied by `apply_model_dialect` when the chosen
+    # model starts with that prefix. First match wins; empty = one dialect for all.
+    model_dialects: tuple[tuple[str, dict], ...] = ()
+    # The registered base_url is a placeholder, not a reachable host: the provider is
+    # unusable until {PREFIX}_BASE_URL is set. Routing skips such a provider entirely
+    # so credentials are never sent to a guessed address.
+    requires_base_url: bool = False
 
 
 # --- aspect ratio -> size string ----------------------------------------------
@@ -68,6 +93,24 @@ OPENAI_RATIO_SIZE = {
     "16:9": "1536x1024", "21:9": "1536x1024", "3:2": "1536x1024",
     "4:3": "1536x1024", "5:4": "1536x1024",
     "9:16": "1024x1536", "2:3": "1024x1536", "3:4": "1024x1536", "4:5": "1024x1536",
+}
+# Google `image_config.image_size` tiers (147ai). Unlike every other provider here
+# this is a resolution TIER, not a WxH string, and it is honored for real — so this
+# is the one route to true 4K in this skill (the OpenAI `size` enum tops out at
+# 1536x1024, i.e. ~1.57 MP).
+IMAGE_CONFIG_SIZES = ("1K", "2K", "4K")
+DEFAULT_IMAGE_CONFIG_SIZE = "2K"
+# 147ai's gpt-image-2 line accepts a LARGER `size` enum than the stock OpenAI set
+# (documented: auto, 1024², 1536x1024, 1024x1536, 2048², 2048x1152, 1152x2048,
+# 3072x1024, 1024x3072). Ratios without an exact member fall back to the closest
+# orientation match rather than silently squaring the image.
+OPENAI_XL_RATIO_SIZE = {
+    "1:1": "2048x2048",
+    "16:9": "2048x1152", "9:16": "1152x2048",
+    "21:9": "3072x1024", "9:21": "1024x3072",
+    "3:2": "1536x1024", "2:3": "1024x1536",
+    "4:3": "1536x1024", "3:4": "1024x1536",
+    "5:4": "2048x1152", "4:5": "1152x2048",
 }
 # SiliconFlow `image_size` param (WxH) — REQUIRED and actually honored. Values must
 # come from SiliconFlow's supported set; these are the closest match per ratio.
@@ -87,6 +130,7 @@ PROVIDERS: dict[str, Provider] = {
         base_url="https://api.openai.com",
         key_env="OPENAI_API_KEY",
         gen_path="/v1/images/generations",
+        gen_style="openai",
         edit_path="/v1/images/edits",
         edit_style="multipart",
         size_style="openai",
@@ -106,6 +150,7 @@ PROVIDERS: dict[str, Provider] = {
         base_url="https://api.302.ai",
         key_env="AI302_API_KEY",
         gen_path="/v1/images/generations",
+        gen_style="openai",
         edit_path="/v1/images/edits",
         edit_style="multipart",
         size_style="openai",
@@ -128,6 +173,7 @@ PROVIDERS: dict[str, Provider] = {
         base_url="https://openrouter.ai/api",
         key_env="OPENROUTER_API_KEY",
         gen_path="/v1/images",  # NOTE: no /generations suffix on OpenRouter
+        gen_style="openai",
         edit_path="/v1/chat/completions",  # img2img via chat image_url
         edit_style="chat_image",
         size_style=None,  # no size param; aspect steered by prompt hint only
@@ -150,6 +196,7 @@ PROVIDERS: dict[str, Provider] = {
         base_url="https://api.siliconflow.cn",
         key_env="SILICONFLOW_API_KEY",
         gen_path="/v1/images/generations",
+        gen_style="openai",
         edit_path="/v1/images/generations",  # img2img via image_prompt on same endpoint
         edit_style="image_prompt",
         size_style="wxh",  # image_size "WxH" is REQUIRED
@@ -169,9 +216,108 @@ PROVIDERS: dict[str, Provider] = {
         max_ref_images=1,  # image gen endpoint takes a single input image
         supports_seed=True,  # image_size endpoint accepts a reproducible seed
     ),
+    "147ai": Provider(
+        name="147ai",
+        base_url="https://nn.147ai.com",
+        key_env="AI147_API_KEY",  # env vars cannot start with a digit (cf. AI302_API_KEY)
+        # Gemini-family image models are served through chat/completions, with
+        # aspect + resolution carried in extra_body.google.image_config. The same
+        # endpoint does text-to-image and image-to-image (refs become image_url
+        # content parts), so gen_path == edit_path.
+        gen_path="/v1/chat/completions",
+        gen_style="chat_image_config",
+        edit_path="/v1/chat/completions",
+        edit_style="chat_image_config",
+        # image_config.image_size is a QUALITY TIER (1K/2K/4K), not WxH; the aspect
+        # is a separate honored field, so unlike the stock OpenAI enum this reaches true 4K.
+        size_style="image_config",
+        default_model="gemini-3-pro-image-preview",
+        models=frozenset({
+            # Gemini family -> chat/completions + image_config (the provider default)
+            "gemini-3-pro-image-preview",
+            "gemini-3-pro-image-preview-stable",
+            "gemini-3.1-flash-image-preview",
+            "gemini-2.5-flash-image",
+            "gemini-2.5-flash-image-preview",
+            # gpt-image family -> OpenAI /v1/images/* (see model_dialects below).
+            # Quality is chosen by the model suffix, not a `quality` param.
+            "gpt-image-2-low",
+            "gpt-image-2-medium",
+            "gpt-image-2-high",
+            "gpt-image-2-client",
+            "gpt-image-2-client-4K",
+        }),
+        # One base_url, two protocols: gpt-image-* speaks plain OpenAI images.
+        # Its `size` enum reaches 2048x2048 / 3072x1024, well past the stock 1536x1024.
+        model_dialects=(
+            ("gpt-image-2", {
+                "gen_path": "/v1/images/generations",
+                "gen_style": "openai",
+                "edit_path": "/v1/images/edits",
+                "edit_style": "multipart",
+                "size_style": "openai_xl",
+                "max_ref_images": 16,
+            }),
+        ),
+        background_unsupported=frozenset(),
+        # New API debits credits per generation; treat failures as billable so the
+        # reliability layer never retries a call that may have completed.
+        bills_on_failure=True,
+        supports_idempotency=False,
+        # Measured 2026-07: back-to-back requests get their TLS connection cut
+        # (SSL UNEXPECTED_EOF) — reproducible within ~20s, gone after a cooldown.
+        # gpt-image-2 generations also run 50-140s, so pace conservatively.
+        rpm=12,
+        max_retries=4,
+        default_concurrency=1,
+        # That SSL EOF is billed regardless, so retrying it is strictly better than
+        # paying for nothing. See _transport_retryable in cli.py.
+        retry_broken_transport=True,
+        # An immediate retry reproduces the cut connection; ~20s was measured clean.
+        backoff_floor=20.0,
+        max_ref_images=8,  # chat image_url parts; actual ceiling varies by model
+        supports_seed=False,  # image_config exposes no seed field
+    ),
+    "volcengine": Provider(
+        name="volcengine",
+        base_url="https://ark.cn-beijing.volces.com/api/v3",
+        key_env="ARK_API_KEY",
+        gen_path="/images/generations",
+        gen_style="ark",
+        edit_path="/images/generations",
+        edit_style="ark_json",
+        size_style="ark",  # Ark accepts quality tiers such as "2K"; ratio stays prompt-steered
+        default_model="doubao-seedream-5-0-260128",
+        models=frozenset({
+            "doubao-seedream-5-0-lite-260128",
+            "doubao-seedream-5-0-260128",
+            "doubao-seedream-5-0-pro-260628",
+        }),
+        background_unsupported=frozenset({
+            "doubao-seedream-5-0-lite-260128",
+            "doubao-seedream-5-0-260128",
+            "doubao-seedream-5-0-pro-260628",
+        }),
+        # Ark does not document idempotency. Treat ambiguous failures as billable so
+        # the reliability layer never retries a potentially completed generation.
+        bills_on_failure=True,
+        supports_idempotency=False,
+        rpm=60,
+        max_retries=3,
+        default_concurrency=2,
+        max_ref_images=10,
+        supports_seed=True,
+    ),
 }
 
 DEFAULT_PROVIDER = "openai"
+# Order `auto` prefers when several providers can serve a request equally well.
+# The official API first, then the relays, and `147ai` last:
+# it is the only route to true 4K but paces at rpm=12 / concurrency=1 with a 20s
+# backoff floor, so it should be chosen deliberately rather than by default.
+# Every registered provider MUST appear here — list_models ranks by this tuple.
+ROUTER_PRIORITY = ("openai", "302ai", "openrouter", "siliconflow",
+                   "volcengine", "147ai")
 
 
 def _override_prefix(provider: Provider) -> str:
@@ -197,6 +343,92 @@ def resolve_provider(name: str) -> Provider:
     return dataclasses.replace(p, base_url=base_url, default_model=default_model)
 
 
+def apply_model_dialect(provider: Provider, model: str) -> Provider:
+    """Specialize `provider` for `model` when the gateway fronts several upstream
+    protocols on one base_url (see Provider.model_dialects).
+
+    Returns the provider unchanged when no prefix matches, so single-dialect
+    providers are entirely unaffected. Call this right after the model is resolved
+    and use the result for the rest of the request.
+    """
+    for prefix, overrides in provider.model_dialects:
+        if model.startswith(prefix):
+            return dataclasses.replace(provider, **overrides)
+    return provider
+
+
+def endpoint_unset(provider: Provider) -> bool:
+    """True when a `requires_base_url` provider has no `{PREFIX}_BASE_URL` set.
+
+    Read from the environment rather than compared against the registry entry, so
+    it stays correct for a provider built with `dataclasses.replace` and for a user
+    who happens to point the override at the placeholder host. Distinct from "no
+    credential": nowhere to send the request disqualifies the provider even under
+    `allow_unconfigured` dry-runs.
+    """
+    if not provider.requires_base_url:
+        return False
+    return not os.environ.get(f"{_override_prefix(provider)}_BASE_URL", "").strip()
+
+
+def provider_is_configured(provider: Provider) -> bool:
+    """Return whether a provider has both a credential and a usable endpoint."""
+    if endpoint_unset(provider):
+        return False
+    return bool(os.environ.get(provider.key_env, "").strip() and provider.base_url)
+
+
+def route_provider(*, model: str | None = None, ref_count: int = 0,
+                   background: str | None = None, seed: int | None = None,
+                   allow_unconfigured: bool = False) -> Provider:
+    """Choose the best provider for one CLI request.
+
+    Capability constraints are hard filters. Model and seed support are ranking
+    signals because the CLI has historically allowed unknown models and ignored
+    unsupported seeds with a warning. Configured providers always beat
+    unconfigured ones; `allow_unconfigured` exists for no-network dry-runs.
+    """
+    candidates: list[tuple[tuple[int, int, int, int], Provider]] = []
+    for priority, name in enumerate(ROUTER_PRIORITY):
+        provider = resolve_provider(name)
+        configured = provider_is_configured(provider)
+        if endpoint_unset(provider):
+            continue
+        if not provider.base_url:
+            continue
+        if not configured and not allow_unconfigured:
+            continue
+        if ref_count and (
+            provider.edit_path is None
+            or provider.edit_style is None
+            or ref_count > provider.max_ref_images
+        ):
+            continue
+        effective_model = model or provider.default_model
+        if background and effective_model in provider.background_unsupported:
+            continue
+        model_match = int(model is None or model in provider.models)
+        seed_match = int(seed is None or provider.supports_seed)
+        score = (int(configured), model_match, seed_match, -priority)
+        candidates.append((score, provider))
+
+    if not candidates:
+        detail = []
+        if ref_count:
+            detail.append(f"{ref_count} reference image(s)")
+        if background:
+            detail.append(f"background={background}")
+        if model:
+            detail.append(f"model={model}")
+        suffix = f" for {', '.join(detail)}" if detail else ""
+        raise ValueError(
+            "no configured image provider satisfies this request"
+            f"{suffix}; set one provider's API key (see .env.example) "
+            "or choose -p explicitly"
+        )
+    return max(candidates, key=lambda item: item[0])[1]
+
+
 def ratio_to_size(provider: Provider, ratio: str) -> str | None:
     """Map an aspect ratio to the provider's size string, or None if the provider
     takes no size parameter (aspect is steered by a prompt hint instead)."""
@@ -204,4 +436,12 @@ def ratio_to_size(provider: Provider, ratio: str) -> str | None:
         return OPENAI_RATIO_SIZE.get(ratio, "1024x1024")
     if provider.size_style == "wxh":
         return SILICONFLOW_RATIO_SIZE.get(ratio, "1328x1328")
+    if provider.size_style == "ark":
+        return "2K"
+    if provider.size_style == "openai_xl":
+        return OPENAI_XL_RATIO_SIZE.get(ratio, "2048x2048")
+    if provider.size_style == "image_config":
+        # A quality tier, not a WxH — the aspect travels separately in
+        # image_config.aspect_ratio, so every ratio maps to the same default tier.
+        return DEFAULT_IMAGE_CONFIG_SIZE
     return None

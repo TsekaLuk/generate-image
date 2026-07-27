@@ -21,19 +21,37 @@ SRC = Path(__file__).resolve().parent.parent / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from generate_image.providers import PROVIDERS  # noqa: E402
+from generate_image.providers import PROVIDERS, _override_prefix  # noqa: E402
+
+# Every provider knob the CLI reads from the environment. Since `auto` routing
+# picks a provider by inspecting which credentials are present, a developer with
+# real keys exported would otherwise route differently than CI and see failures
+# that have nothing to do with their change.
+_PROVIDER_ENV = tuple(
+    name
+    for p in PROVIDERS.values()
+    for name in (p.key_env,
+                 f"{_override_prefix(p)}_BASE_URL",
+                 f"{_override_prefix(p)}_DEFAULT_MODEL")
+) + ("GENIMAGE_PROVIDER", "GENIMAGE_RATIO", "GENIMAGE_OUTPUT_DIR", "GENIMAGE_IMAGE_SIZE")
 
 
 @pytest.fixture(autouse=True)
-def _hermetic_provider_env(monkeypatch):
-    """Strip ambient provider env overrides so tests never depend on the shell.
+def _isolate_provider_env(monkeypatch, tmp_path_factory):
+    """Run every test against an empty provider environment.
 
-    OPENAI_BASE_URL / OPENAI_API_KEY are commonly exported in developer shells;
-    without this, resolve_provider() would silently point the default provider at
-    whatever relay the developer uses and break the mocked-transport assertions.
+    Tests that need a credential set it themselves via `monkeypatch.setenv`. This
+    closes the three ways a real machine leaks one in: variables exported in the
+    ambient shell, a `.env` the CLI's loader walks up from the CWD to find, and
+    the legacy `~/.seedream-config.json` ARK_API_KEY migration path.
+
+    `_load_dotenv` itself stays live — the loader is under test — so the stubs go
+    on the seams it reads from, which is also what the dotenv tests override.
     """
-    for p in PROVIDERS.values():
-        prefix = p.key_env.removesuffix("_API_KEY")
-        monkeypatch.delenv(p.key_env, raising=False)
-        monkeypatch.delenv(f"{prefix}_BASE_URL", raising=False)
-        monkeypatch.delenv(f"{prefix}_DEFAULT_MODEL", raising=False)
+    from generate_image import cli
+
+    for name in _PROVIDER_ENV:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(cli, "_find_dotenv", lambda: None)
+    empty_home = tmp_path_factory.mktemp("home")
+    monkeypatch.setattr(cli.Path, "home", classmethod(lambda cls: empty_home))

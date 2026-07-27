@@ -2,6 +2,21 @@
 
 Ready-to-edit specs for `generate-image`. Copy one and change the prompts.
 
+## `acceptance-loop.yaml` — bounded cyclic flow
+
+Generate an image, review it against explicit criteria with a multimodal model,
+and feed a revised prompt back into generation when rejected. The sample permits
+at most two image attempts and four total billed calls:
+
+```bash
+uv run generate-image --flow-file examples/acceptance-loop.yaml --dry-run
+uv run generate-image --flow-file examples/acceptance-loop.yaml -n keyboard-loop
+```
+
+It uses `OPENAI_API_KEY` for both `gpt-image-2` generation and the OpenAI-compatible
+`gpt-5.4-mini` judge. Attempts are immutable under
+`~/Pictures/generate-image/runs/keyboard-loop/`.
+
 ## `bytedance-logos.yaml` — a real DAG run (department logo set)
 
 10 ByteDance-style department logos in one shared visual language, generated in

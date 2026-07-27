@@ -1,7 +1,7 @@
 [project]
 name = "generate-image"
-version = "2.0.0"
-description = "One-command multi-provider image generation (openai / 302ai / openrouter / siliconflow) with img2img, multi-image compositing, and a DAG scheduler."
+version = "2.2.0"
+description = "Capability-routed multi-provider image generation with img2img, Seedream sequences, DAG scheduling, and bounded acceptance-loop flows."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [

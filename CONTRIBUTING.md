@@ -43,6 +43,24 @@
   另一边。
 - 内部版 `.env.example` 教用户从旧的 `AIGW_API_KEY` 改名到 `MOX_API_KEY`；
   这条迁移提示是内部历史遗留物，公开版没有、也不该有。
+- 内部版还有一个组织内网关 `tds`（`requires_base_url=True`，没有可猜测的公共
+  主机名）。公开版**不注册**它。`Provider.requires_base_url` 这个字段本身保留，
+  两边同构；公开版没有 provider 用到它，靠 `test_provider_router.py` 里一个
+  `dataclasses.replace` 出来的合成 provider 维持覆盖。
+
+### 测试移植的三个固定改法
+
+内部版测试大量依赖 mox 的语义，机械改 key 名会让断言悄悄失真。以下三类每次都要改：
+
+| 内部版测试依赖 | 公开版怎么写 |
+| --- | --- |
+| `bills_on_failure=True` + 已知单价（`¥0.1/张`）的成本断言 | 改走 `-p 302ai`（公开版唯一同时满足这两点的 provider），并显式 `setenv AI302_API_KEY` |
+| `background_unsupported` 非空（mox `gpt-image-2`） | 用 `volcengine`（Seedream 全系硬拒），或 `dataclasses.replace` 合成一个 `GUARDED` provider |
+| `.env` / 环境变量泄漏 | `tests/conftest.py` 的 autouse fixture 已清空所有 provider 变量、stub 掉 `_find_dotenv` 与 `Path.home`；新测试不要再自己写一份局部清理 |
+
+> 机械 `mox` → `openai` 全局替换会把内部网关主机名 `aigw.mox.ktvsky.com` 变成
+> `aigw.openai.ktvsky.com` —— 仍然是内网派生串。替换后**务必**单独 grep 一遍
+> 内网域名，不要只 grep provider 名。
 
 ## 从内部版回移改动到公开版
 

@@ -60,3 +60,65 @@ def test_400_never_retryable(name):
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+# --- broken-transport retry (147ai) -------------------------------------------
+
+def test_broken_transport_retries_when_the_failure_is_billed_anyway():
+    """A mid-flight SSL EOF on 147ai is billed regardless, so refusing to retry
+    costs the same money and returns no image. Measured 2026-07."""
+    import httpx
+    from generate_image import cli
+    from generate_image.providers import PROVIDERS
+
+    p = PROVIDERS["147ai"]
+    assert p.bills_on_failure and not p.supports_idempotency
+    # the conservative rule alone would refuse...
+    assert cli._net_retryable(p) is False
+    # ...but the measured-billing override allows it
+    assert cli._transport_retryable(p) is True
+
+
+def test_broken_transport_override_is_off_for_other_billing_gateways():
+    from generate_image import cli
+    from generate_image.providers import PROVIDERS
+
+    for name in ("openai", "302ai", "volcengine"):
+        assert cli._transport_retryable(PROVIDERS[name]) is cli._net_retryable(
+            PROVIDERS[name])
+
+
+def test_read_timeout_stays_conservative_on_147ai():
+    """A timeout may mean the image WAS produced; only a broken connection is
+    known to have delivered nothing."""
+    from generate_image import cli
+    from generate_image.providers import PROVIDERS
+
+    assert cli._net_retryable(PROVIDERS["147ai"]) is False
+
+
+def test_backoff_floor_prevents_an_immediate_retry():
+    from generate_image.reliability import backoff_delay
+
+    for attempt in (1, 2, 3, 4):
+        assert backoff_delay(attempt, floor=20.0) >= 20.0
+    # default behavior is unchanged (may wait ~0s)
+    assert backoff_delay(1, floor=0.0) >= 0.0
+
+
+def test_backoff_floor_never_inverts_the_jitter_window():
+    """floor > the exponential ceiling must not produce uniform(hi, lo)."""
+    from generate_image.reliability import backoff_delay
+
+    d = backoff_delay(1, base=0.5, cap=8.0, floor=30.0)
+    assert d >= 30.0
+
+
+def test_147ai_declares_the_measured_throttle_settings():
+    from generate_image.providers import PROVIDERS
+
+    p = PROVIDERS["147ai"]
+    assert p.retry_broken_transport is True
+    assert p.backoff_floor >= 20.0
+    assert p.default_concurrency == 1  # back-to-back requests get cut
+    assert p.rpm <= 12

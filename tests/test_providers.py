@@ -1,13 +1,20 @@
 """Tests for the provider registry (providers.py).
 
-Covers: the four preconfigured providers, dataclass field validity, env-override
+Covers: the preconfigured providers, dataclass field validity, env-override
 resolution, and the aspect-ratio -> size mapping per size dialect.
 """
 
 from __future__ import annotations
 
+import base64
+
 import pytest
 
+
+class _Stop(Exception):
+    """Sentinel raised by fake transports to capture a request without sending it."""
+
+from generate_image import cli
 from generate_image import providers
 from generate_image.providers import (
     PROVIDERS,
@@ -16,14 +23,16 @@ from generate_image.providers import (
     resolve_provider,
     ratio_to_size,
     VALID_EDIT_STYLES,
+    VALID_GEN_STYLES,
     VALID_SIZE_STYLES,
 )
 
 
-EXPECTED_PROVIDERS = {"openai", "302ai", "openrouter", "siliconflow"}
+EXPECTED_PROVIDERS = {"openai", "302ai", "openrouter", "siliconflow",
+                      "volcengine", "147ai"}
 
 
-def test_registry_has_the_four_expected_providers():
+def test_registry_has_the_expected_providers():
     assert set(PROVIDERS) == EXPECTED_PROVIDERS
 
 
@@ -40,6 +49,7 @@ def test_each_provider_has_coherent_fields(name):
     assert p.base_url.startswith("https://")
     assert p.key_env.endswith("_API_KEY")
     assert p.gen_path.startswith("/")
+    assert p.gen_style in VALID_GEN_STYLES
     # edit support is optional, but if present the style must be recognized
     if p.edit_path is not None:
         assert p.edit_style in VALID_EDIT_STYLES
@@ -63,6 +73,8 @@ def test_billing_and_idempotency_flags_match_research():
     assert PROVIDERS["openai"].supports_idempotency is False
     assert PROVIDERS["openrouter"].bills_on_failure is False
     assert PROVIDERS["siliconflow"].bills_on_failure is False
+    # Ark debits credits per generation, failures included.
+    assert PROVIDERS["volcengine"].bills_on_failure is True
 
 
 def test_edit_styles_are_per_provider():
@@ -70,6 +82,14 @@ def test_edit_styles_are_per_provider():
     assert PROVIDERS["302ai"].edit_style == "multipart"
     assert PROVIDERS["openrouter"].edit_style == "chat_image"
     assert PROVIDERS["siliconflow"].edit_style == "image_prompt"
+    assert PROVIDERS["volcengine"].edit_style == "ark_json"
+
+
+def test_volcengine_catalog_includes_seedream_5_pro():
+    p = PROVIDERS["volcengine"]
+    assert p.default_model == "doubao-seedream-5-0-260128"
+    assert "doubao-seedream-5-0-lite-260128" in p.models
+    assert "doubao-seedream-5-0-pro-260628" in p.models
 
 
 def test_openrouter_gen_path_has_no_generations_suffix():
@@ -94,11 +114,11 @@ def test_resolve_returns_registry_defaults_without_env(monkeypatch):
 
 
 def test_resolve_applies_base_url_and_model_env_overrides(monkeypatch):
-    monkeypatch.setenv("OPENAI_BASE_URL", "https://relay.example.com/")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://relay.internal.example/")
     monkeypatch.setenv("OPENAI_DEFAULT_MODEL", "gpt-image-9")
     p = resolve_provider("openai")
     # trailing slash stripped for clean path joining
-    assert p.base_url == "https://relay.example.com"
+    assert p.base_url == "https://relay.internal.example"
     assert p.default_model == "gpt-image-9"
 
 
@@ -142,9 +162,150 @@ def test_ratio_to_size_none_when_provider_takes_no_size():
     assert ratio_to_size(p, "16:9") is None
 
 
+def test_ratio_to_size_ark_uses_2k_tier():
+    assert ratio_to_size(PROVIDERS["volcengine"], "1:1") == "2K"
+    assert ratio_to_size(PROVIDERS["volcengine"], "16:9") == "2K"
+
+
 def test_ratio_to_size_unknown_ratio_falls_back():
     assert ratio_to_size(PROVIDERS["openai"], "7:3") == "1024x1024"
     assert ratio_to_size(PROVIDERS["siliconflow"], "7:3") == "1328x1328"
+
+
+def test_legacy_seedream_config_is_read_only_ark_key_fallback(tmp_path, monkeypatch):
+    (tmp_path / ".seedream-config.json").write_text(
+        '{"ARK_API_KEY":"legacy-test-key"}', encoding="utf-8")
+    monkeypatch.delenv("ARK_API_KEY", raising=False)
+    monkeypatch.setattr(cli, "_find_dotenv", lambda: None)
+    monkeypatch.setattr(cli.Path, "home", classmethod(lambda cls: tmp_path))
+
+    cli._load_dotenv()
+
+    assert cli.require_key("ARK_API_KEY") == "legacy-test-key"
+
+
+def test_ark_env_key_wins_over_legacy_seedream_config(tmp_path, monkeypatch):
+    (tmp_path / ".seedream-config.json").write_text(
+        '{"ARK_API_KEY":"legacy-test-key"}', encoding="utf-8")
+    monkeypatch.setenv("ARK_API_KEY", "env-test-key")
+    monkeypatch.setattr(cli, "_find_dotenv", lambda: None)
+    monkeypatch.setattr(cli.Path, "home", classmethod(lambda cls: tmp_path))
+
+    cli._load_dotenv()
+
+    assert cli.require_key("ARK_API_KEY") == "env-test-key"
+
+
+# --- 147ai: one base_url fronting two upstream protocols ----------------------
+
+def test_147ai_defaults_to_the_gemini_chat_dialect():
+    p = PROVIDERS["147ai"]
+    assert p.base_url == "https://nn.147ai.com"
+    assert p.key_env == "AI147_API_KEY"  # env vars may not start with a digit
+    assert p.default_model == "gemini-3-pro-image-preview"
+    assert p.gen_style == "chat_image_config"
+    assert p.gen_path == "/v1/chat/completions"
+    assert p.size_style == "image_config"
+
+
+def test_147ai_gpt_image_models_switch_to_the_openai_images_dialect():
+    from generate_image.providers import apply_model_dialect
+
+    p = apply_model_dialect(PROVIDERS["147ai"], "gpt-image-2-high")
+
+    assert p.gen_path == "/v1/images/generations"
+    assert p.gen_style == "openai"
+    assert p.edit_path == "/v1/images/edits"
+    assert p.edit_style == "multipart"
+    assert p.size_style == "openai_xl"
+    # identity fields must survive specialization
+    assert p.name == "147ai" and p.key_env == "AI147_API_KEY"
+
+
+def test_147ai_gemini_models_keep_the_chat_dialect():
+    from generate_image.providers import apply_model_dialect
+
+    p = apply_model_dialect(PROVIDERS["147ai"], "gemini-2.5-flash-image")
+
+    assert p.gen_style == "chat_image_config"
+    assert p.gen_path == "/v1/chat/completions"
+
+
+def test_apply_model_dialect_is_a_noop_for_single_dialect_providers():
+    from generate_image.providers import apply_model_dialect
+
+    for name in ("openai", "302ai", "openrouter", "siliconflow", "volcengine"):
+        p = PROVIDERS[name]
+        assert apply_model_dialect(p, "anything-at-all") is p
+
+
+def test_image_config_size_style_returns_a_quality_tier_not_wxh():
+    from generate_image.providers import IMAGE_CONFIG_SIZES
+
+    p = PROVIDERS["147ai"]
+    for ratio in ("1:1", "16:9", "21:9"):
+        assert ratio_to_size(p, ratio) in IMAGE_CONFIG_SIZES
+
+
+def test_openai_xl_sizes_preserve_orientation():
+    from generate_image.providers import apply_model_dialect
+
+    p = apply_model_dialect(PROVIDERS["147ai"], "gpt-image-2-medium")
+
+    def wh(r):
+        return tuple(int(x) for x in ratio_to_size(p, r).split("x"))
+
+    w, h = wh("16:9")
+    assert w > h
+    w, h = wh("9:16")
+    assert h > w
+    w, h = wh("1:1")
+    assert w == h
+    # the gateway's XL enum must beat openai's ~1.57MP ceiling somewhere
+    assert max(wh("1:1")[0] * wh("1:1")[1], wh("21:9")[0] * wh("21:9")[1]) > 1_572_516
+
+
+def test_edit_multipart_pins_size_only_where_it_is_honored(monkeypatch, tmp_path):
+    """147ai's /v1/images/edits honors `size`; openai/302ai ignore it, so sending one
+    there would misreport control we don't have."""
+    from generate_image import cli
+    from generate_image.providers import apply_model_dialect
+
+    ref = tmp_path / "r.png"
+    ref.write_bytes(base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQ"
+        "AAAABJRU5ErkJggg=="))
+    seen = {}
+
+    def fake_post(client, url, key, provider, *, json_body=None, files=None,
+                  data=None, idem_key=None):
+        seen["form"] = data
+        raise _Stop()
+
+    monkeypatch.setattr(cli, "_post", fake_post)
+
+    xl = apply_model_dialect(PROVIDERS["147ai"], "gpt-image-2-high")
+    with pytest.raises(_Stop):
+        cli.provider_edit(xl, "p", "gpt-image-2-high", [str(ref)], "16:9", "k", None)
+    assert seen["form"]["size"] == "2048x1152"
+
+    with pytest.raises(_Stop):
+        cli.provider_edit(PROVIDERS["openai"], "p", "gpt-image-2", [str(ref)], "16:9",
+                          "k", None)
+    assert "size" not in seen["form"]
+
+
+def test_147ai_declared_styles_are_registered_as_valid():
+    from generate_image.providers import apply_model_dialect
+
+    p = PROVIDERS["147ai"]
+    assert p.gen_style in VALID_GEN_STYLES
+    assert p.size_style in VALID_SIZE_STYLES
+    assert p.edit_style in VALID_EDIT_STYLES
+    xl = apply_model_dialect(p, "gpt-image-2-low")
+    assert xl.gen_style in VALID_GEN_STYLES
+    assert xl.size_style in VALID_SIZE_STYLES
+    assert xl.edit_style in VALID_EDIT_STYLES
 
 
 if __name__ == "__main__":

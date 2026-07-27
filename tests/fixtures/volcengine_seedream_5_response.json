@@ -1,0 +1,15 @@
+{
+  "created": 1784797798,
+  "data": [
+    {
+      "size": "2048x2048",
+      "url": "https://ark-content-generation.example/seedream-output.png"
+    }
+  ],
+  "model": "doubao-seedream-5-0-260128",
+  "usage": {
+    "generated_images": 1,
+    "output_tokens": 16384,
+    "total_tokens": 16384
+  }
+}

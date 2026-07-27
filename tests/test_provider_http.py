@@ -12,18 +12,20 @@ from __future__ import annotations
 
 import base64
 import json
+from pathlib import Path
 
 import httpx
 import pytest
 
 from generate_image import cli as generate
 from generate_image.providers import PROVIDERS
-from generate_image.reliability import build_client
+from generate_image.reliability import ProviderError, build_client
 
 _TINY_PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
 )
 _B64 = base64.b64encode(_TINY_PNG).decode("ascii")
+_FIXTURE = Path(__file__).parent / "fixtures" / "volcengine_seedream_5_response.json"
 
 
 def _client(handler) -> httpx.Client:
@@ -93,6 +95,55 @@ def test_siliconflow_generate_uses_image_size_and_no_hint():
     assert seen["body"]["image_size"] == "1664x928"     # siliconflow WxH for 16:9
     # wxh providers control size for real -> no ratio hint appended to the prompt
     assert "landscape" not in seen["body"]["prompt"]
+
+
+def test_volcengine_generate_matches_live_ark_shape_and_dialect():
+    seen = {}
+    fixture = json.loads(_FIXTURE.read_text(encoding="utf-8"))
+
+    def handler(req):
+        if req.method == "GET":
+            return httpx.Response(200, content=_TINY_PNG)
+        seen["path"] = req.url.path
+        seen["body"] = _body(req)
+        return httpx.Response(200, json=fixture)
+
+    p = PROVIDERS["volcengine"]
+    with _client(handler) as c:
+        out = generate.provider_generate(p, "minimal poster", p.default_model,
+                                         "16:9", "k", c, seed=42)
+
+    assert out == _TINY_PNG
+    assert seen["path"] == "/api/v3/images/generations"
+    assert seen["body"]["model"] == "doubao-seedream-5-0-260128"
+    assert seen["body"]["size"] == "2K"
+    assert seen["body"]["sequential_image_generation"] == "disabled"
+    assert seen["body"]["response_format"] == "url"
+    assert seen["body"]["seed"] == 42
+    assert "n" not in seen["body"]
+
+
+def test_volcengine_pro_omits_unsupported_sequential_field():
+    seen = {}
+
+    def handler(req):
+        if req.method == "GET":
+            return httpx.Response(200, content=_TINY_PNG)
+        seen["body"] = _body(req)
+        return httpx.Response(200, json={
+            "created": 1784799168,
+            "data": [{"size": "1536x1536", "url": "https://ark.test/pro.png"}],
+            "model": "doubao-seedream-5-0-pro-260628",
+            "usage": {"generated_images": 1},
+        })
+
+    p = PROVIDERS["volcengine"]
+    with _client(handler) as c:
+        out = generate.provider_generate(
+            p, "minimal poster", "doubao-seedream-5-0-pro-260628", "1:1", "k", c)
+
+    assert out == _TINY_PNG
+    assert "sequential_image_generation" not in seen["body"]
 
 
 # --- extract_image_bytes normalization ----------------------------------------
@@ -271,6 +322,77 @@ def test_siliconflow_edit_uses_image_prompt(tmp_path):
     assert seen["path"] == "/v1/images/generations"
     assert seen["body"]["image_prompt"] == _B64
     assert seen["body"]["image_size"] == "1664x928"
+
+
+def test_volcengine_edit_embeds_local_refs_as_data_urls(tmp_path):
+    refs = []
+    for name in ("subject.png", "style.png"):
+        path = tmp_path / name
+        path.write_bytes(_TINY_PNG)
+        refs.append(str(path))
+    seen = {}
+
+    def handler(req):
+        if req.method == "GET":
+            return httpx.Response(200, content=_TINY_PNG)
+        seen["body"] = _body(req)
+        return httpx.Response(200, json={
+            "created": 1784797893,
+            "data": [{"size": "2048x2048", "url": "https://ark.test/edit.png"}],
+            "model": "doubao-seedream-5-0-260128",
+            "usage": {"generated_images": 1, "output_tokens": 16384, "total_tokens": 16384},
+        })
+
+    p = PROVIDERS["volcengine"]
+    with _client(handler) as c:
+        out = generate.provider_edit(p, "combine them", p.default_model, refs,
+                                     "1:1", "k", c)
+
+    assert out == _TINY_PNG
+    assert len(seen["body"]["image"]) == 2
+    assert all(value.startswith("data:image/png;base64,")
+               for value in seen["body"]["image"])
+    assert seen["body"]["sequential_image_generation"] == "disabled"
+
+
+def test_volcengine_sequence_extracts_every_image_and_options():
+    seen = {}
+
+    def handler(req):
+        if req.method == "GET":
+            return httpx.Response(200, content=_TINY_PNG)
+        seen["body"] = _body(req)
+        return httpx.Response(200, json={
+            "created": 1784797893,
+            "data": [
+                {"size": "2048x2048", "url": "https://ark.test/1.png"},
+                {"size": "2048x2048", "url": "https://ark.test/2.png"},
+            ],
+            "model": "doubao-seedream-5-0-260128",
+            "usage": {"generated_images": 2, "output_tokens": 32768, "total_tokens": 32768},
+        })
+
+    p = PROVIDERS["volcengine"]
+    with _client(handler) as c:
+        out = generate.provider_generate_sequence(
+            p, "two-panel storyboard", p.default_model, [], "16:9", "k", c,
+            max_images=2,
+        )
+
+    assert out == [_TINY_PNG, _TINY_PNG]
+    assert seen["body"]["sequential_image_generation"] == "auto"
+    assert seen["body"]["sequential_image_generation_options"] == {"max_images": 2}
+
+
+def test_volcengine_pro_rejects_sequence_before_network():
+    def handler(req):
+        raise AssertionError("Pro sequence must fail before network")
+
+    p = PROVIDERS["volcengine"]
+    with _client(handler) as c:
+        with pytest.raises(ProviderError, match="not supported by Ark model"):
+            generate.provider_generate_sequence(
+                p, "storyboard", "doubao-seedream-5-0-pro-260628", [], "16:9", "k", c)
 
 
 if __name__ == "__main__":

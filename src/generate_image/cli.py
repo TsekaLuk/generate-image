@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Generate images via a pluggable OpenAI-compatible provider registry.
+"""Generate images via a pluggable provider registry.
 
-Default provider: `openai` (official OpenAI Images API). Others: `302ai`,
-`openrouter`, `siliconflow`. Reads `{PROVIDER}_API_KEY` from a .env at the project root
+Default routing: `auto` (the configured provider best matching the request).
+Providers include `openai`, `302ai`, `openrouter`, `siliconflow`,
+`volcengine`, and `147ai`. Reads `{PROVIDER}_API_KEY` from a .env at the project root
 (or the process env), saves a PNG to ~/Pictures/generate-image/, and previews
 inline with `kitten icat` when running in a kitty terminal.
 
@@ -34,13 +35,19 @@ from pathlib import Path
 import httpx
 
 from . import dag
+from . import flow
 from . import probe
 from . import __version__ as PKG_VERSION
 from .providers import (
     PROVIDERS,
-    DEFAULT_PROVIDER,
+    AUTO_PROVIDER,
+    DEFAULT_IMAGE_CONFIG_SIZE,
+    IMAGE_CONFIG_SIZES,
     Provider,
+    apply_model_dialect,
+    endpoint_unset,
     resolve_provider,
+    route_provider,
     ratio_to_size,
 )
 from .reliability import (
@@ -65,9 +72,8 @@ OUTPUT_SUBDIR = "generate-image"
 MAX_REF_BYTES = 10 * 1024 * 1024
 
 # Aspect steered by prompt wording — used by providers whose size param is absent
-# (openrouter) or possibly ignored (some relays). On openai/302ai the `size` param
-# controls aspect; the hint is a harmless extra steer there. SiliconFlow ("wxh")
-# controls size for real and skips this hint.
+# (openrouter) or possibly ignored (relays that proxy gpt-image). SiliconFlow
+# ("wxh") controls size for real and skips this hint.
 RATIO_HINT = {
     "16:9": "画面横向 16:9 宽幅构图 宽明显大于高 landscape",
     "21:9": "画面超宽 21:9 电影宽幅 宽远大于高 ultrawide landscape",
@@ -107,15 +113,25 @@ def _find_dotenv() -> Path | None:
 
 def _load_dotenv() -> None:
     env_path = _find_dotenv()
-    if env_path is None:
-        return
-    for line in env_path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        k, v = line.split("=", 1)
-        v = v.strip().strip('"').strip("'")
-        os.environ.setdefault(k.strip(), v)
+    if env_path is not None:
+        for line in env_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            v = v.strip().strip('"').strip("'")
+            os.environ.setdefault(k.strip(), v)
+
+    # Backward-compatible, read-only migration path from seedream-5-skill.
+    # New setups should use ARK_API_KEY in the environment or this skill's .env.
+    if not os.environ.get("ARK_API_KEY"):
+        legacy = Path.home() / ".seedream-config.json"
+        try:
+            value = json.loads(legacy.read_text(encoding="utf-8")).get("ARK_API_KEY")
+        except (OSError, json.JSONDecodeError, AttributeError):
+            value = None
+        if isinstance(value, str) and value.strip():
+            os.environ["ARK_API_KEY"] = value.strip()
 
 
 def require_key(name: str) -> str:
@@ -142,6 +158,19 @@ def _net_retryable(provider: Provider) -> bool:
     return (not provider.bills_on_failure) or provider.supports_idempotency
 
 
+def _transport_retryable(provider: Provider) -> bool:
+    """Retry policy for a connection that DIED MID-FLIGHT (SSL EOF, reset, connect
+    error) rather than timing out.
+
+    The usual billing caution — don't retry an ambiguous failure on a gateway that
+    charges for failures and has no idempotency key — assumes not retrying saves
+    money. Measured on 147ai (2026-07) that assumption is false: a mid-flight SSL
+    EOF is still billed, so declining to retry costs the same and returns nothing.
+    When the provider declares this, retry and at least get the image.
+    """
+    return provider.retry_broken_transport or _net_retryable(provider)
+
+
 def _post(client: httpx.Client, url: str, key: str, provider: Provider, *,
           json_body: dict | None = None, files: dict | None = None,
           data: dict | None = None, idem_key: str | None = None) -> httpx.Response:
@@ -156,7 +185,10 @@ def _post(client: httpx.Client, url: str, key: str, provider: Provider, *,
     except httpx.TimeoutException as e:
         raise ProviderError(f"{provider.name} timeout: {e}", retryable=_net_retryable(provider))
     except httpx.RequestError as e:
-        raise ProviderError(f"{provider.name} network error: {e}", retryable=_net_retryable(provider))
+        # A transport that broke before any response arrived is safe to re-issue in
+        # a way a read-timeout is not: nothing was delivered to lose.
+        raise ProviderError(f"{provider.name} network error: {e}",
+                            retryable=_transport_retryable(provider))
     if resp.status_code >= 400:
         retryable = is_retryable_status(
             resp.status_code,
@@ -248,11 +280,30 @@ def extract_image_bytes(d: dict, client: httpx.Client, *, provider_name: str = "
     raise ProviderError(f"{provider_name} returned no image: {json.dumps(d)[:300]}", retryable=False)
 
 
+def extract_all_image_bytes(d: dict, client: httpx.Client, *,
+                            provider_name: str = "provider") -> list[bytes]:
+    """Extract every Ark/OpenAI-style `data[]` image, preserving response order."""
+    data = d.get("data")
+    if not isinstance(data, list) or not data:
+        return [extract_image_bytes(d, client, provider_name=provider_name)]
+    images: list[bytes] = []
+    for item in data:
+        images.append(extract_image_bytes({"data": [item]}, client,
+                                          provider_name=provider_name))
+    return images
+
+
 # --- request shaping ----------------------------------------------------------
 
 def _shape_prompt(provider: Provider, prompt: str, ratio: str) -> str:
-    """Append a ratio hint unless the provider controls size for real (wxh)."""
-    if provider.size_style == "wxh":
+    """Append a ratio hint only where the aspect is NOT controlled for real.
+
+    Real control: `wxh` (WxH), `image_config` (explicit aspect_ratio field),
+    `openai_xl` (a honored `size` enum). The plain `openai` style needs the hint
+    because a relay fronting gpt-image may ignore `size` and reshape to whatever the
+    prompt implies; on the official API the hint is a harmless extra steer.
+    """
+    if provider.size_style in ("wxh", "image_config", "openai_xl"):
         return prompt
     hint = RATIO_HINT.get(ratio, "")
     return f"{prompt}。{hint}" if hint else prompt
@@ -267,19 +318,67 @@ def _guard_background(provider: Provider, model: str, background: str | None) ->
         )
 
 
+def _image_config_body(provider: Provider, ratio: str) -> dict:
+    """extra_body.google.image_config for the chat_image_config dialect.
+
+    Both fields are documented as required. `aspect_ratio` accepts exactly the
+    ratios this CLI already exposes via -r; `image_size` is a 1K/2K/4K tier,
+    overridable per run with GENIMAGE_IMAGE_SIZE.
+    """
+    tier = os.environ.get("GENIMAGE_IMAGE_SIZE") or ratio_to_size(provider, ratio) \
+        or DEFAULT_IMAGE_CONFIG_SIZE
+    if tier not in IMAGE_CONFIG_SIZES:
+        print(f"→ warning: invalid GENIMAGE_IMAGE_SIZE={tier!r}; using "
+              f"{DEFAULT_IMAGE_CONFIG_SIZE} (valid: {'/'.join(IMAGE_CONFIG_SIZES)})",
+              file=sys.stderr)
+        tier = DEFAULT_IMAGE_CONFIG_SIZE
+    return {"extra_body": {"google": {"image_config": {
+        "aspect_ratio": ratio,
+        "image_size": tier,
+    }}}}
+
+
+def _ark_supports_sequence(model: str) -> bool:
+    """Seedream 5.0 Pro rejects sequential_image_generation, even `disabled`."""
+    return model != "doubao-seedream-5-0-pro-260628"
+
+
 def provider_generate(provider: Provider, prompt: str, model: str, ratio: str,
                       key: str, client: httpx.Client, *,
                       background: str | None = None, idem_key: str | None = None,
                       seed: int | None = None) -> bytes:
     """Text-to-image via the provider's generation endpoint."""
     _guard_background(provider, model, background)
-    body: dict = {"model": model, "prompt": _shape_prompt(provider, prompt, ratio), "n": 1}
+    if provider.gen_style == "ark":
+        body: dict = {
+            "model": model,
+            "prompt": _shape_prompt(provider, prompt, ratio),
+            "size": ratio_to_size(provider, ratio) or "2K",
+            "response_format": "url",
+            "output_format": "png",
+            "watermark": False,
+        }
+        if _ark_supports_sequence(model):
+            body["sequential_image_generation"] = "disabled"
+    elif provider.gen_style == "chat_image_config":
+        # Google image models behind an OpenAI-compatible chat endpoint: the prompt
+        # is a chat turn and the aspect/resolution ride in extra_body.
+        body = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "stream": False,
+            **_image_config_body(provider, ratio),
+        }
+    else:
+        body = {"model": model, "prompt": _shape_prompt(provider, prompt, ratio), "n": 1}
     size = ratio_to_size(provider, ratio)
-    if provider.size_style == "openai" and size:
+    if provider.gen_style != "ark" and provider.size_style in ("openai", "openai_xl") and size:
         body["size"] = size
     elif provider.size_style == "wxh" and size:
         body["image_size"] = size
-    if background:
+    # `background` is an OpenAI-images field; a chat endpoint would reject it as an
+    # unknown top-level key, so it is only sent on the image-generation dialects.
+    if background and provider.gen_style != "chat_image_config":
         body["background"] = background
     # Seed is only sent where supported; the unsupported-seed warning is emitted
     # ONCE per run by the caller (see _warn_seed_unsupported), not per request, so
@@ -289,6 +388,39 @@ def provider_generate(provider: Provider, prompt: str, model: str, ratio: str,
     url = provider.base_url + provider.gen_path
     resp = _post(client, url, key, provider, json_body=body, idem_key=idem_key)
     return extract_image_bytes(_parse_json(resp, provider), client, provider_name=provider.name)
+
+
+def provider_generate_sequence(provider: Provider, prompt: str, model: str,
+                               refs: list[str], ratio: str, key: str,
+                               client: httpx.Client, *, max_images: int | None = None,
+                               idem_key: str | None = None,
+                               seed: int | None = None) -> list[bytes]:
+    """Generate one coherent Ark image sequence in a single billed request."""
+    if provider.gen_style != "ark":
+        raise ProviderError("--sequential is only supported by the volcengine provider",
+                            retryable=False)
+    if not _ark_supports_sequence(model):
+        raise ProviderError(f"--sequential is not supported by Ark model {model}",
+                            retryable=False)
+    body: dict = {
+        "model": model,
+        "prompt": _shape_prompt(provider, prompt, ratio),
+        "size": ratio_to_size(provider, ratio) or "2K",
+        "sequential_image_generation": "auto",
+        "response_format": "url",
+        "output_format": "png",
+        "watermark": False,
+    }
+    if max_images is not None:
+        body["sequential_image_generation_options"] = {"max_images": max_images}
+    if seed is not None:
+        body["seed"] = seed
+    if refs:
+        body["image"] = _ark_image_inputs(refs, client)
+    resp = _post(client, provider.base_url + provider.gen_path, key, provider,
+                 json_body=body, idem_key=idem_key)
+    return extract_all_image_bytes(_parse_json(resp, provider), client,
+                                   provider_name=provider.name)
 
 
 def _read_ref(ref: str, client: httpx.Client) -> tuple[bytes, str, str]:
@@ -336,15 +468,22 @@ def provider_edit(provider: Provider, prompt: str, model: str, refs: list[str],
         )
     style = provider.edit_style
     if style == "multipart":
-        return _edit_multipart(provider, prompt, model, refs, key, client, background, idem_key)
+        return _edit_multipart(provider, prompt, model, refs, ratio, key, client,
+                               background, idem_key)
     if style == "chat_image":
         return _edit_chat_image(provider, prompt, model, refs, key, client, idem_key)
+    if style == "chat_image_config":
+        return _edit_chat_image_config(provider, prompt, model, refs, ratio, key,
+                                       client, idem_key)
     if style == "image_prompt":
         return _edit_image_prompt(provider, prompt, model, refs, ratio, key, client, idem_key)
+    if style == "ark_json":
+        return _edit_ark_json(provider, prompt, model, refs, ratio, key, client, idem_key)
     raise ProviderError(f"{provider.name} unknown edit_style {style!r}", retryable=False)
 
 
-def _edit_multipart(provider, prompt, model, refs, key, client, background, idem_key) -> bytes:
+def _edit_multipart(provider, prompt, model, refs, ratio, key, client, background,
+                    idem_key) -> bytes:
     resolved = _read_refs(refs, client)
     if len(resolved) == 1:
         data, mime, fname = resolved[0]
@@ -353,6 +492,12 @@ def _edit_multipart(provider, prompt, model, refs, key, client, background, idem
         # OpenAI gpt-image edits compose multiple inputs via repeated image[] parts.
         files = [("image[]", (fname, data, mime)) for (data, mime, fname) in resolved]
     form = {"model": model, "prompt": prompt, "n": "1"}
+    # Only sent where the edit endpoint honors `size` for real. Relays that reshape
+    # to the prompt ignore it, so pinning a size there would be a lie.
+    if provider.size_style == "openai_xl":
+        size = ratio_to_size(provider, ratio)
+        if size:
+            form["size"] = size
     if background:
         form["background"] = background
     url = provider.base_url + provider.edit_path
@@ -376,6 +521,29 @@ def _edit_chat_image(provider, prompt, model, refs, key, client, idem_key) -> by
     return extract_image_bytes(_parse_json(resp, provider), client, provider_name=provider.name)
 
 
+def _edit_chat_image_config(provider, prompt, model, refs, ratio, key, client,
+                            idem_key) -> bytes:
+    """chat/completions img2img that ALSO pins the output aspect/resolution.
+
+    Same shape as _edit_chat_image, plus extra_body.google.image_config — which is
+    why this dialect is separate: on this gateway an edit can control its output
+    geometry, which the plain chat_image route cannot.
+    """
+    content: list = [{"type": "text", "text": prompt}]
+    for data, mime, _ in _read_refs(refs, client):
+        data_url = f"data:{mime};base64," + base64.b64encode(data).decode("ascii")
+        content.append({"type": "image_url", "image_url": {"url": data_url}})
+    body = {
+        "model": model,
+        "messages": [{"role": "user", "content": content}],
+        "stream": False,
+        **_image_config_body(provider, ratio),
+    }
+    url = provider.base_url + provider.edit_path
+    resp = _post(client, url, key, provider, json_body=body, idem_key=idem_key)
+    return extract_image_bytes(_parse_json(resp, provider), client, provider_name=provider.name)
+
+
 def _edit_image_prompt(provider, prompt, model, refs, ratio, key, client, idem_key) -> bytes:
     data, mime, _ = _read_ref(refs[0], client)
     b64 = base64.b64encode(data).decode("ascii")
@@ -389,6 +557,32 @@ def _edit_image_prompt(provider, prompt, model, refs, ratio, key, client, idem_k
     url = provider.base_url + provider.gen_path
     resp = _post(client, url, key, provider, json_body=body, idem_key=idem_key)
     return extract_image_bytes(_parse_json(resp, provider), client, provider_name=provider.name)
+
+
+def _ark_image_inputs(refs: list[str], client: httpx.Client) -> list[str]:
+    """Normalize local/remote refs to Ark-supported Base64 data URLs."""
+    images: list[str] = []
+    for data, mime, _ in _read_refs(refs, client):
+        images.append(f"data:{mime};base64," + base64.b64encode(data).decode("ascii"))
+    return images
+
+
+def _edit_ark_json(provider, prompt, model, refs, ratio, key, client, idem_key) -> bytes:
+    body = {
+        "model": model,
+        "prompt": _shape_prompt(provider, prompt, ratio),
+        "image": _ark_image_inputs(refs, client),
+        "size": ratio_to_size(provider, ratio) or "2K",
+        "response_format": "url",
+        "output_format": "png",
+        "watermark": False,
+    }
+    if _ark_supports_sequence(model):
+        body["sequential_image_generation"] = "disabled"
+    resp = _post(client, provider.base_url + provider.gen_path, key, provider,
+                 json_body=body, idem_key=idem_key)
+    return extract_image_bytes(_parse_json(resp, provider), client,
+                               provider_name=provider.name)
 
 
 # --- batch mode ----------------------------------------------------------------
@@ -467,20 +661,51 @@ def kitty_preview(path: Path) -> bool:
 # --- metadata sidecar ---------------------------------------------------------
 
 # Single source of truth for per-image ¥ cost. Providers absent from the map bill
-# a variable/unknown amount (openrouter / siliconflow depend on the chosen model).
+# a variable/unknown amount (openrouter / siliconflow / volcengine depend on the model).
 COST_CNY_PER_IMAGE: dict[str, float] = {"302ai": 0.1}
 
+# Providers whose price swings by model get a per-model table keyed "provider/model".
+# 147ai bills in site credits; these are the published per-image rates (2026-07, from
+# its own key-free /api/pricing endpoint) and can drift — re-check that endpoint if
+# the printed estimate ever disagrees with the console.
+COST_CNY_PER_IMAGE_BY_MODEL: dict[str, float] = {
+    "147ai/gemini-2.5-flash-image": 0.04,
+    "147ai/gemini-2.5-flash-image-preview": 0.04,
+    "147ai/gemini-3.1-flash-image-preview": 0.12,
+    "147ai/gemini-3-pro-image-preview": 0.2,
+    "147ai/gemini-3-pro-image-preview-stable": 0.4,
+    "147ai/gpt-image-2-low": 0.04,
+    "147ai/gpt-image-2-client": 0.08,
+    "147ai/gpt-image-2-medium": 0.12,
+    "147ai/gpt-image-2-client-4K": 0.12,
+    "147ai/gpt-image-2-high": 0.2,
+}
 
-def _billed_cost(counts: dict[str, int]) -> tuple[float | None, int, list[str]]:
+
+def _unit_cost(provider_name: str, model: str | None) -> float | None:
+    """Per-image ¥ for a provider, refined by model where the price varies by model."""
+    if model:
+        per = COST_CNY_PER_IMAGE_BY_MODEL.get(f"{provider_name}/{model}")
+        if per is not None:
+            return per
+    return COST_CNY_PER_IMAGE.get(provider_name)
+
+
+def _billed_cost(counts: dict[str, int],
+                 models: dict[str, str] | None = None) -> tuple[float | None, int, list[str]]:
     """Reduce a {provider: image_count} tally to
-    (known_total_cny_or_None, total_billed_calls, providers_with_varying_cost)."""
+    (known_total_cny_or_None, total_billed_calls, providers_with_varying_cost).
+
+    `models` optionally maps provider -> model so providers priced per model
+    (e.g. 147ai, 10x spread across its catalog) report a real number instead of
+    'cost varies'."""
     total = 0.0
     billed = 0
     known = False
     varies: list[str] = []
     for name, c in counts.items():
         billed += c
-        per = COST_CNY_PER_IMAGE.get(name)
+        per = _unit_cost(name, (models or {}).get(name))
         if per is None:
             if name not in varies:
                 varies.append(name)
@@ -490,16 +715,22 @@ def _billed_cost(counts: dict[str, int]) -> tuple[float | None, int, list[str]]:
     return (round(total, 4) if known else None, billed, varies)
 
 
-def _cost_phrase(counts: dict[str, int]) -> str:
+def _cost_phrase(counts: dict[str, int], models: dict[str, str] | None = None) -> str:
     """Human cost phrase shared by --dry-run and the post-run summary, e.g.
     '≈ ¥0.30 (3 billed call(s))' or 'cost varies for openrouter (1 billed call(s))'."""
-    total, billed, varies = _billed_cost(counts)
+    total, billed, varies = _billed_cost(counts, models)
     parts: list[str] = []
     if total is not None:
         parts.append(f"≈ ¥{total:.2f}")
     parts.extend(f"cost varies for {name}" for name in varies)
     head = "; ".join(parts) if parts else "cost varies"
     return f"{head} ({billed} billed call(s))"
+
+
+def _sequence_cost_phrase(image_count: int) -> str:
+    """Ark sequence billing is per output image even though it is one request."""
+    return (f"cost varies for volcengine ({image_count} output image(s), "
+            "1 billed request)")
 
 
 # --- live progress (single path, tty-only) ------------------------------------
@@ -582,17 +813,41 @@ def _write_metadata(png_path: Path, raw: bytes, *, prompt: str, provider: str,
 # --- cli ----------------------------------------------------------------------
 
 def _env_default_provider() -> str:
-    """Default provider from GENIMAGE_PROVIDER, falling back to DEFAULT_PROVIDER.
+    """Default provider from GENIMAGE_PROVIDER, falling back to auto routing.
     An invalid value is IGNORED (built-in default used) with a one-line warning —
     never an argparse hard-error."""
     v = os.environ.get("GENIMAGE_PROVIDER")
     if not v:
-        return DEFAULT_PROVIDER
-    if v in PROVIDERS:
+        return AUTO_PROVIDER
+    if v == AUTO_PROVIDER or v in PROVIDERS:
         return v
     print(f"→ warning: ignoring invalid GENIMAGE_PROVIDER={v!r} "
-          f"(using default {DEFAULT_PROVIDER})", file=sys.stderr)
-    return DEFAULT_PROVIDER
+          f"(using default {AUTO_PROVIDER})", file=sys.stderr)
+    return AUTO_PROVIDER
+
+
+def _resolve_provider_for_args(args, *, allow_unconfigured: bool = False) -> Provider:
+    """Resolve an explicit provider or capability-route an `auto` request."""
+    _load_dotenv()
+    if args.provider == AUTO_PROVIDER:
+        try:
+            return route_provider(
+                model=args.model,
+                ref_count=len(args.ref or []),
+                background=args.background,
+                seed=args.seed,
+                allow_unconfigured=allow_unconfigured,
+            )
+        except ValueError as exc:
+            sys.exit(f"error: {exc}")
+    provider = resolve_provider(args.provider)
+    if endpoint_unset(provider) and not allow_unconfigured:
+        prefix = provider.key_env.removesuffix("_API_KEY")
+        sys.exit(
+            f"error: {provider.name} requires {prefix}_BASE_URL to be configured "
+            "before a real request"
+        )
+    return provider
 
 
 def _env_default_ratio() -> str:
@@ -622,15 +877,19 @@ def _warn_seed_unsupported(provider: Provider) -> None:
 
 def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(
-        description="Generate an image via a pluggable OpenAI-compatible provider "
-                    "(openai / 302ai / openrouter / siliconflow).",
+        description="Generate an image via automatic capability routing or an explicit "
+                    "provider (openai / 302ai / openrouter / siliconflow / "
+                    "volcengine / 147ai).",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples (installed console command generate-image; ./generate.py shim also works):\n"
-            "  generate-image '夕阳下的金门大桥，油画风格'              # default: openai, 16:9\n"
+            "  generate-image '夕阳下的金门大桥，油画风格'              # default: auto route, 16:9\n"
+            "  generate-image -p openai '品牌标志'                      # force OpenAI\n"
             "  generate-image -r 9:16 '竖图海报'                       # aspect via prompt hint\n"
             "  generate-image -p siliconflow -m Qwen/Qwen-Image '插画'  # switch provider\n"
             "  generate-image -p openrouter '一只赛博朋克猫'            # openrouter /v1/images\n"
+            "  generate-image -p volcengine '一张信息图'                # Seedream 5.0 via Ark\n"
+            "  generate-image -p volcengine --sequential --max-images 4 '四格分镜'\n"
             "  generate-image --ref /tmp/face.png '换成梵高风格'        # img2img (openai/302 native)\n"
             "  generate-image --batch-file prompts.txt --concurrency 3  # batch, one prompt/line\n"
         ),
@@ -640,8 +899,8 @@ def parse_args() -> argparse.Namespace:
     # resolved (and warned about) AFTER parsing — only when the flag was not given
     # explicitly. This keeps the invalid-env warning off `--help` and off runs where
     # the user overrode the env with -p/-r (the flag always wins).
-    ap.add_argument("-p", "--provider", choices=list(PROVIDERS), default=None,
-                    help=f"backend provider (default: {DEFAULT_PROVIDER}, or $GENIMAGE_PROVIDER). "
+    ap.add_argument("-p", "--provider", choices=[AUTO_PROVIDER, *PROVIDERS], default=None,
+                    help=f"backend provider (default: {AUTO_PROVIDER}, or $GENIMAGE_PROVIDER). "
                          f"Run generate-image-models to see each provider's models/keys.")
     ap.add_argument("-m", "--model", default=None,
                     help="model id (default: the provider's default_model). "
@@ -655,10 +914,10 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--ref", action="append",
                     help="reference image URL or local path for img2img (≤10MB each). "
                          "Repeat for multi-image compositing where supported "
-                         "(openai/302ai up to 16, openrouter varies, siliconflow 1).")
+                         "(openai/302ai up to 16, volcengine up to 10, openrouter varies, siliconflow 1).")
     ap.add_argument("--background", choices=("auto", "opaque", "transparent"), default=None,
                     help="request a transparent/opaque background where the provider/model "
-                         "supports it; hard-refused on models known not to support it.")
+                         "supports it; hard-refused on models known not to (e.g. Seedream).")
     ap.add_argument("-o", "--output-dir", default=_env_default_output_dir(),
                     help=f"output directory (default: ~/Pictures/{OUTPUT_SUBDIR}/, "
                          f"or $GENIMAGE_OUTPUT_DIR)")
@@ -668,13 +927,19 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--timeout", type=int, default=300,
                     help="per-request read timeout in seconds (default: 300)")
     ap.add_argument("--seed", type=int, default=None,
-                    help="reproducibility seed; only honored where the provider "
-                         "supports it (siliconflow). Ignored with a warning on "
+                    help="reproducibility seed; honored where the provider "
+                         "supports it (siliconflow/volcengine). Ignored with a warning on "
                          "providers that don't (openai/302ai/openrouter).")
     ap.add_argument("--count", type=int, default=1,
                     help="how many images to generate for a SINGLE prompt "
                          "(default: 1). N>1 writes <name>_1.png..<name>_N.png; "
                          "not valid with --batch-file/--dag-file.")
+    ap.add_argument("--sequential", action="store_true",
+                    help="ask Seedream on the volcengine provider for one coherent image "
+                         "sequence in a single request; single-prompt mode only.")
+    ap.add_argument("--max-images", type=int, default=None,
+                    help="maximum images in a Seedream --sequential response (1..15); "
+                         "requires --sequential.")
     ap.add_argument("--open", action="store_true",
                     help="reveal the written image(s) in the OS viewer afterwards "
                          "(macOS `open`, else `xdg-open`); single/--count only, "
@@ -713,6 +978,10 @@ def parse_args() -> argparse.Namespace:
                          "'@id' uses that task's output image (implicit dependency). Any "
                          "acyclic graph. Makes the positional prompt optional. Exits nonzero "
                          "on any task failure/skip (partial completion), unlike --batch-file.")
+    ap.add_argument("--flow-file",
+                    help="YAML/JSON bounded directed control flow. Supports conditional "
+                         "routes and cycles such as generate -> review -> refine -> generate. "
+                         "Cyclic specs must declare limits.max_steps.")
     ap.add_argument("--on-failure", choices=list(dag.ON_FAILURE_CHOICES), default=dag.ON_FAILURE_SKIP,
                     help="--dag-file failure policy: 'skip' (skip a failed task's "
                          "descendants, keep independent branches) or 'fail-fast' (abort "
@@ -733,12 +1002,123 @@ def _read_batch_prompts(batch_file: str) -> list[str]:
     return prompts
 
 
+def _resolve_task_provider(task: dag.Task, args, *, allow_unconfigured: bool = False) -> Provider:
+    """Resolve a DAG node's explicit provider or route an implicit/auto node."""
+    requested = task.provider or AUTO_PROVIDER
+    if requested != AUTO_PROVIDER and requested not in PROVIDERS:
+        sys.exit(f"error: task {task.id!r} unknown provider {requested!r}; "
+                 f"choices: {[AUTO_PROVIDER, *PROVIDERS]}")
+    if requested == AUTO_PROVIDER:
+        try:
+            return route_provider(
+                model=task.model,
+                ref_count=len(task.refs),
+                background=task.background,
+                seed=args.seed,
+                allow_unconfigured=allow_unconfigured,
+            )
+        except ValueError as exc:
+            sys.exit(f"error: task {task.id!r}: {exc}")
+    provider = resolve_provider(requested)
+    if endpoint_unset(provider) and not allow_unconfigured:
+        prefix = provider.key_env.removesuffix("_API_KEY")
+        sys.exit(f"error: task {task.id!r}: {provider.name} requires {prefix}_BASE_URL "
+                 "before a real request")
+    return provider
+
+
+_FLOW_NODE_ROUTES = {
+    "image.describe": frozenset({"success", "error"}),
+    "image.generate": frozenset({"success", "error"}),
+    "image.review": frozenset({"accepted", "rejected", "error"}),
+    "prompt.refine": frozenset({"success", "error"}),
+}
+_FLOW_CHAT_PATHS = {
+    "openai": "/v1/chat/completions",
+    "openrouter": "/v1/chat/completions",
+}
+
+
+def _validate_flow_cli_spec(spec: flow.FlowSpec) -> None:
+    unknown_types = sorted({node.type for node in spec.nodes.values()} - set(_FLOW_NODE_ROUTES))
+    if unknown_types:
+        raise flow.FlowError(f"unsupported flow node type(s): {unknown_types}")
+    routes_by_node: dict[str, set[str]] = {node_id: set() for node_id in spec.nodes}
+    for edge in spec.edges:
+        routes_by_node[edge.source].add(edge.route)
+        if edge.route not in _FLOW_NODE_ROUTES[spec.nodes[edge.source].type]:
+            raise flow.FlowError(
+                f"node {edge.source!r} type {spec.nodes[edge.source].type!r} "
+                f"cannot emit route {edge.route!r}"
+            )
+    required_routes = {
+        "image.describe": {"success"},
+        "image.generate": {"success"},
+        "image.review": {"accepted", "rejected"},
+        "prompt.refine": {"success"},
+    }
+    for node in spec.nodes.values():
+        missing = required_routes[node.type] - routes_by_node[node.id]
+        if missing:
+            raise flow.FlowError(f"node {node.id!r} is missing route(s): {sorted(missing)}")
+        if node.type == "image.generate":
+            # An unset provider means `auto` — the node is capability-routed at run
+            # time like any other generate call, so only an explicitly named one is
+            # checked against the registry here.
+            provider_name = node.config.get("provider", AUTO_PROVIDER)
+            ratio = node.config.get("ratio", DEFAULT_RATIO)
+            if provider_name != AUTO_PROVIDER and provider_name not in PROVIDERS:
+                raise flow.FlowError(f"node {node.id!r} unknown provider {provider_name!r}")
+            if ratio not in VALID_RATIOS:
+                raise flow.FlowError(f"node {node.id!r} invalid ratio {ratio!r}")
+        elif node.type in ("image.describe", "image.review"):
+            service_name = node.config.get("service")
+            if not isinstance(service_name, str) or service_name not in spec.services:
+                raise flow.FlowError(
+                    f"node {node.id!r} references unknown service {service_name!r}"
+                )
+            service = spec.services[service_name]
+            provider_name = service.get("provider")
+            if provider_name not in _FLOW_CHAT_PATHS:
+                raise flow.FlowError(
+                    f"service {service_name!r} provider must be one of "
+                    f"{sorted(_FLOW_CHAT_PATHS)}"
+                )
+            if not isinstance(service.get("model"), str) or not service["model"]:
+                raise flow.FlowError(f"service {service_name!r} is missing model")
+
+
 def _dry_run_plan(args) -> None:
     """--dry-run: print the plan to stderr and exit 0, with NO key and NO network.
 
     Short-circuits BEFORE require_key() and any httpx client on all three paths.
     Image count: 1 (single), usable-prompt count (--batch-file), task count (--dag-file).
     """
+    if args.flow_file:
+        try:
+            spec = flow.load_flow(args.flow_file)
+            _validate_flow_cli_spec(spec)
+        except flow.FlowError as e:
+            sys.exit(f"error: {e}")
+        describe_nodes = sum(node.type == "image.describe" for node in spec.nodes.values())
+        image_nodes = sum(node.type == "image.generate" for node in spec.nodes.values())
+        review_nodes = sum(node.type == "image.review" for node in spec.nodes.values())
+        print("→ dry-run: no API call, no key required", file=sys.stderr)
+        print(f"→ flow-file: {args.flow_file} ({len(spec.nodes)} node(s))", file=sys.stderr)
+        print(f"→ entry:     {spec.entry}", file=sys.stderr)
+        print(f"→ limits:    max_steps={spec.limits.max_steps} "
+              f"max_billed_calls={spec.limits.max_billed_calls}", file=sys.stderr)
+        print(f"→ network node definitions: {describe_nodes} describe + {image_nodes} image "
+              f"+ {review_nodes} review (cycles may revisit them)", file=sys.stderr)
+        if args.json:
+            print(json.dumps({
+                "mode": "flow", "nodes": len(spec.nodes), "entry": spec.entry,
+                "max_steps": spec.limits.max_steps,
+                "max_billed_calls": spec.limits.max_billed_calls,
+                "network_nodes": {"describe": describe_nodes, "image": image_nodes,
+                                  "review": review_nodes},
+            }, ensure_ascii=False))
+        return
     if args.dag_file:
         try:
             tasks = dag.load_dag(args.dag_file)
@@ -747,16 +1127,17 @@ def _dry_run_plan(args) -> None:
         print("→ dry-run: no API call, no key required", file=sys.stderr)
         print(f"→ dag-file: {args.dag_file} ({len(tasks)} task(s))", file=sys.stderr)
         json_tasks: list[dict] = []
+        routed: list[str] = []
         for t in tasks:
-            prov = t.provider or DEFAULT_PROVIDER
-            model = t.model or "(provider default)"
+            provider = _resolve_task_provider(t, args, allow_unconfigured=True)
+            prov = provider.name
+            model = t.model or provider.default_model
             ratio = t.ratio or DEFAULT_RATIO
             print(f"→   {t.id}: provider={prov} model={model} ratio={ratio}", file=sys.stderr)
-            resolved_model = t.model or (
-                resolve_provider(prov).default_model if prov in PROVIDERS else None)
-            json_tasks.append({"id": t.id, "provider": prov, "model": resolved_model,
+            json_tasks.append({"id": t.id, "provider": prov, "model": model,
                                "ratio": ratio})
-        counts = Counter(t.provider or DEFAULT_PROVIDER for t in tasks)
+            routed.append(prov)
+        counts = Counter(routed)
         print(f"→ images:   {len(tasks)}", file=sys.stderr)
         print(f"→ cost:     {_cost_phrase(counts)}", file=sys.stderr)
         if args.json:
@@ -766,8 +1147,25 @@ def _dry_run_plan(args) -> None:
             }, ensure_ascii=False))
         return
 
-    provider = resolve_provider(args.provider)
+    provider = _resolve_provider_for_args(args, allow_unconfigured=True)
     model = args.model or provider.default_model
+
+    provider = apply_model_dialect(provider, model)
+    if args.sequential:
+        maximum = args.max_images or 15
+        print("→ dry-run: no API call, no key required", file=sys.stderr)
+        print(f"→ provider: {provider.name}", file=sys.stderr)
+        print(f"→ model:    {model}", file=sys.stderr)
+        print(f"→ ratio:    {args.ratio}", file=sys.stderr)
+        print(f"→ images:   up to {maximum} (1 sequential request)", file=sys.stderr)
+        print(f"→ cost:     {_sequence_cost_phrase(maximum)}", file=sys.stderr)
+        if args.json:
+            print(json.dumps({
+                "mode": "sequential", "provider": provider.name, "model": model,
+                "ratio": args.ratio, "images_max": maximum,
+                "estimated_cost_cny": None, "requests": 1,
+            }, ensure_ascii=False))
+        return
     if args.batch_file:
         prompts = _read_batch_prompts(args.batch_file)
         if not prompts:
@@ -782,12 +1180,13 @@ def _dry_run_plan(args) -> None:
     print(f"→ model:    {model}", file=sys.stderr)
     print(f"→ ratio:    {args.ratio}", file=sys.stderr)
     print(f"→ images:   {n}", file=sys.stderr)
-    print(f"→ cost:     {_cost_phrase(counts)}", file=sys.stderr)
+    models = {provider.name: model}
+    print(f"→ cost:     {_cost_phrase(counts, models)}", file=sys.stderr)
     if args.json:
         print(json.dumps({
             "mode": "batch" if args.batch_file else "single",
             "provider": provider.name, "model": model, "ratio": args.ratio,
-            "images": n, "estimated_cost_cny": _billed_cost(counts)[0],
+            "images": n, "estimated_cost_cny": _billed_cost(counts, models)[0],
         }, ensure_ascii=False))
 
 
@@ -820,6 +1219,7 @@ def _run_batch_file(args, provider: Provider, model: str, key: str,
                                       key, client, background=args.background,
                                       idem_key=idem, seed=args.seed),
             max_attempts=provider.max_retries,
+            backoff_floor=provider.backoff_floor,
             before_sleep=_throttle_cb,
         )
         limiter.on_success()
@@ -850,9 +1250,10 @@ def _run_batch_file(args, provider: Provider, model: str, key: str,
 
     total = len(results)
     print(f"batch: {succeeded}/{total} succeeded", file=sys.stderr)
-    # Some providers (302ai) bill success AND failure, so every attempted job
-    # counts toward the cost summary.
-    print(f"→ spent: {_cost_phrase({provider.name: total})}", file=sys.stderr)
+    # Some providers (302ai) bill success AND failure, so every attempted job is a
+    # billed call there; _cost_phrase reports per provider.
+    print(f"→ spent: {_cost_phrase({provider.name: total}, {provider.name: model})}",
+          file=sys.stderr)
     if args.json:
         print(json.dumps(json_items, ensure_ascii=False))
     if succeeded == 0:
@@ -867,21 +1268,25 @@ def _run_dag_file(args, out_dir: Path) -> None:
     except dag.DagError as e:
         sys.exit(f"error: {e}")
 
+    _load_dotenv()
+
     # Validate per-task provider/ratio up front (fail before any billed request).
     for t in tasks:
-        if t.provider and t.provider not in PROVIDERS:
+        if t.provider and t.provider != AUTO_PROVIDER and t.provider not in PROVIDERS:
             sys.exit(f"error: task {t.id!r} unknown provider {t.provider!r}; "
-                     f"choices: {list(PROVIDERS)}")
+                     f"choices: {[AUTO_PROVIDER, *PROVIDERS]}")
         if t.ratio and t.ratio not in VALID_RATIOS:
             sys.exit(f"error: task {t.id!r} invalid ratio {t.ratio!r}; "
                      f"choose from {sorted(VALID_RATIOS)}")
 
-    # Warn ONCE per distinct provider that ignores --seed (outside the worker
-    # threads), instead of once per task.
+    task_providers = {t.id: _resolve_task_provider(t, args) for t in tasks}
+
+    # Warn ONCE per distinct routed provider that ignores --seed (outside the
+    # worker threads), instead of once per task.
     if args.seed is not None:
         warned: set[str] = set()
         for t in tasks:
-            prov = resolve_provider(t.provider or DEFAULT_PROVIDER)
+            prov = task_providers[t.id]
             if not prov.supports_seed and prov.name not in warned:
                 warned.add(prov.name)
                 _warn_seed_unsupported(prov)
@@ -893,8 +1298,9 @@ def _run_dag_file(args, out_dir: Path) -> None:
     keys: dict[str, str] = {}
 
     def execute(task: dag.Task, refs: list[str]) -> bytes:
-        provider = resolve_provider(task.provider or DEFAULT_PROVIDER)
+        provider = task_providers[task.id]
         model = task.model or provider.default_model
+        provider = apply_model_dialect(provider, model)
         ratio = task.ratio or DEFAULT_RATIO
         if provider.key_env not in keys:
             keys[provider.key_env] = require_key(provider.key_env)
@@ -919,7 +1325,8 @@ def _run_dag_file(args, out_dir: Path) -> None:
         with limiter.slot():
             bucket.acquire()
             raw = call_with_retry(attempt, max_attempts=provider.max_retries,
-                                  before_sleep=_throttle)
+                                  before_sleep=_throttle,
+                                  backoff_floor=provider.backoff_floor)
         limiter.on_success()
         return raw
 
@@ -953,8 +1360,9 @@ def _run_dag_file(args, out_dir: Path) -> None:
             except OSError:
                 raw = b""
             if raw:
-                prov_name = t.provider or DEFAULT_PROVIDER
-                model = t.model or resolve_provider(prov_name).default_model
+                provider = task_providers[t.id]
+                prov_name = provider.name
+                model = t.model or provider.default_model
                 _write_metadata(png, raw, prompt=t.prompt, provider=prov_name, model=model,
                                 ratio=t.ratio or DEFAULT_RATIO, background=t.background,
                                 refs=list(t.refs))
@@ -965,7 +1373,7 @@ def _run_dag_file(args, out_dir: Path) -> None:
     # Only tasks that actually ran (succeeded or failed) issue a billed call;
     # skipped descendants never reach the network.
     billed_counts = Counter(
-        t.provider or DEFAULT_PROVIDER
+        task_providers[t.id].name
         for t in tasks if results[t.id].status in (dag.SUCCESS, dag.FAILED)
     )
     if billed_counts:
@@ -976,6 +1384,393 @@ def _run_dag_file(args, out_dir: Path) -> None:
         sys.exit("error: no dag task produced an image")
     if n_fail or n_skip:
         sys.exit(1)  # partial completion -> nonzero exit
+
+
+def _flow_service(node: flow.FlowNode, context: flow.FlowContext) -> dict:
+    service_name = node.config.get("service")
+    if not isinstance(service_name, str) or not service_name:
+        raise flow.FlowError(f"node {node.id!r} requires a string service")
+    service = context.services.get(service_name)
+    if service is None:
+        raise flow.FlowError(f"node {node.id!r} references unknown service {service_name!r}")
+    provider_name = service.get("provider")
+    if provider_name not in _FLOW_CHAT_PATHS:
+        raise flow.FlowError(
+            f"service {service_name!r} provider must be one of {sorted(_FLOW_CHAT_PATHS)}"
+        )
+    provider = resolve_provider(provider_name)
+    resolved = dict(service)
+    resolved["base_url"] = provider.base_url
+    resolved["key_env"] = provider.key_env
+    resolved["chat_path"] = _FLOW_CHAT_PATHS[provider_name]
+    return resolved
+
+
+def _flow_chat_json(client: httpx.Client, service: dict, *, messages: list[dict]) -> dict:
+    key = require_key(service["key_env"])
+    endpoint = service["base_url"].rstrip("/") + service["chat_path"]
+    body: dict = {"model": service["model"], "messages": messages, "temperature": 0}
+    if service.get("json_mode", True):
+        body["response_format"] = {"type": "json_object"}
+
+    def attempt() -> httpx.Response:
+        try:
+            response = client.post(endpoint, headers={"Authorization": f"Bearer {key}"}, json=body)
+        except httpx.TimeoutException as exc:
+            raise ProviderError(f"flow review timeout: {exc}", retryable=False) from exc
+        except httpx.RequestError as exc:
+            raise ProviderError(f"flow review network error: {exc}", retryable=False) from exc
+        if response.status_code >= 400:
+            retryable = is_retryable_status(
+                response.status_code, bills_on_failure=True, supports_idempotency=False
+            )
+            retry_after = (retry_after_seconds(response.headers)
+                           if response.status_code in (408, 429) else None)
+            raise ProviderError(
+                f"flow review HTTP {response.status_code}: {response.text[:500]}",
+                retryable=retryable, retry_after=retry_after, status=response.status_code,
+            )
+        return response
+
+    response = call_with_retry(attempt, max_attempts=int(service.get("max_retries", 3)))
+    try:
+        payload = response.json()
+        content = payload["choices"][0]["message"]["content"]
+        if isinstance(content, list):
+            content = "".join(
+                item.get("text", "") for item in content if isinstance(item, dict)
+            )
+        if not isinstance(content, str):
+            raise TypeError("message content is not text")
+        cleaned = content.strip()
+        if cleaned.startswith("```"):
+            cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", cleaned, flags=re.IGNORECASE)
+        start, end = cleaned.find("{"), cleaned.rfind("}")
+        if start < 0 or end < start:
+            raise ValueError("no JSON object in response")
+        result = json.loads(cleaned[start:end + 1])
+    except (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise flow.FlowError(f"invalid review response: {exc}") from exc
+    if not isinstance(result, dict):
+        raise flow.FlowError("review response must be a JSON object")
+    return result
+
+
+def _flow_image_data_url(path: Path) -> tuple[str, bytes]:
+    try:
+        image_bytes = path.read_bytes()
+    except OSError as exc:
+        raise flow.FlowError(f"cannot read flow image {path}: {exc}") from exc
+    if len(image_bytes) > MAX_REF_BYTES:
+        raise flow.FlowError(f"flow image exceeds {MAX_REF_BYTES // 1024 // 1024} MB: {path}")
+    if image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+        mime = "image/png"
+    elif image_bytes.startswith(b"\xff\xd8"):
+        mime = "image/jpeg"
+    else:
+        suffix = path.suffix.lower().lstrip(".")
+        mime = _MIME_BY_EXT.get(suffix, "image/png")
+    return f"data:{mime};base64," + base64.b64encode(image_bytes).decode("ascii"), image_bytes
+
+
+def _run_flow_file(args, out_dir: Path) -> None:
+    try:
+        spec = flow.load_flow(args.flow_file)
+        _validate_flow_cli_spec(spec)
+    except flow.FlowError as exc:
+        sys.exit(f"error: {exc}")
+
+    run_name = (args.name or f"flow_{datetime.now():%Y%m%d_%H%M%S}").removesuffix(".png")
+    if not run_name or Path(run_name).name != run_name or run_name in (".", ".."):
+        sys.exit("error: flow run name must be a single filename component")
+    run_dir = out_dir / "runs" / run_name
+    if run_dir.exists():
+        sys.exit(f"error: flow run directory already exists: {run_dir}")
+    client = make_client(args.timeout)
+    keys: dict[str, str] = {}
+
+    def image_describe(node: flow.FlowNode, context: flow.FlowContext,
+                       attempt_dir: Path) -> flow.NodeOutcome:
+        config = flow.render_template(dict(node.config), context)
+        image_ref = config.get("image")
+        if not isinstance(image_ref, str):
+            raise flow.FlowError(f"node {node.id!r} requires an image path")
+        image_path = Path(flow.resolve_artifact(image_ref, context)).expanduser()
+        data_url, image_bytes = _flow_image_data_url(image_path)
+        snapshot = attempt_dir / ("reference.jpg" if data_url.startswith("data:image/jpeg")
+                                  else "reference.png")
+        snapshot.write_bytes(image_bytes)
+        objective = config.get(
+            "objective",
+            "Reconstruct the image as faithfully as possible with an image-generation prompt.",
+        )
+        if not isinstance(objective, str) or not objective.strip():
+            raise flow.FlowError(f"node {node.id!r} objective must be a non-empty string")
+        state_key = config.get("state_key", "prompt")
+        if not isinstance(state_key, str) or not state_key:
+            raise flow.FlowError(f"node {node.id!r} state_key must be a non-empty string")
+        describe_prompt = (
+            f"{objective} Analyze visible subject, environment, composition, camera and lens "
+            "character, depth of field, lighting, color grade, materials, pose, wardrobe, and "
+            "rendering style. Do not identify a real person. Return JSON only with one key, "
+            "prompt, whose value is a complete standalone generation prompt. Do not put aspect "
+            "ratio instructions in the prompt."
+        )
+        service = _flow_service(node, context)
+        try:
+            description = _flow_chat_json(client, service, messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": describe_prompt},
+                    {"type": "image_url", "image_url": {"url": data_url}},
+                ],
+            }])
+            prompt = description.get("prompt")
+            if not isinstance(prompt, str) or not prompt.strip():
+                raise flow.FlowError("describe response field 'prompt' must be a non-empty string")
+        except Exception as exc:
+            return flow.NodeOutcome("error", data={"error": str(exc)}, billed_calls=1)
+        (attempt_dir / "prompt.txt").write_text(prompt + "\n", encoding="utf-8")
+        return flow.NodeOutcome(
+            "success", state_patch={state_key: prompt},
+            data={"prompt": prompt, "image": str(image_path),
+                  "snapshot": str(snapshot)}, billed_calls=1,
+        )
+
+    def image_generate(node: flow.FlowNode, context: flow.FlowContext,
+                       attempt_dir: Path) -> flow.NodeOutcome:
+        config = flow.render_template(dict(node.config), context)
+        prompt = config.get("prompt")
+        if not isinstance(prompt, str) or not prompt.strip():
+            raise flow.FlowError(f"node {node.id!r} resolved an empty prompt")
+        background = config.get("background")
+        raw_refs = config.get("refs") or []
+        if not isinstance(raw_refs, list):
+            raise flow.FlowError(f"node {node.id!r} refs must be a list")
+        # Refs are resolved before the provider is chosen: `auto` routes on how many
+        # reference images the node actually feeds in, which decides whether an
+        # img2img-capable provider is required at all.
+        refs = [flow.resolve_artifact(ref, context) for ref in raw_refs]
+        requested = config.get("provider", AUTO_PROVIDER)
+        if requested == AUTO_PROVIDER:
+            try:
+                provider = route_provider(model=config.get("model"), ref_count=len(refs),
+                                          background=background, seed=args.seed)
+            except ValueError as exc:
+                raise flow.FlowError(f"node {node.id!r}: {exc}") from exc
+        else:
+            provider = resolve_provider(requested)
+        model = config.get("model") or provider.default_model
+        provider = apply_model_dialect(provider, model)
+        ratio = config.get("ratio", DEFAULT_RATIO)
+        if provider.key_env not in keys:
+            keys[provider.key_env] = require_key(provider.key_env)
+        key = keys[provider.key_env]
+        idem = new_idempotency_key()
+        try:
+            raw = call_with_retry(
+                lambda: provider_edit(
+                    provider, prompt, model, refs, ratio, key, client,
+                    background=background, idem_key=idem,
+                ) if refs else provider_generate(
+                    provider, prompt, model, ratio, key, client,
+                    background=background, idem_key=idem, seed=args.seed,
+                ),
+                max_attempts=provider.max_retries,
+                backoff_floor=provider.backoff_floor,
+            )
+        except Exception as exc:  # one logical request was attempted and may be billable
+            return flow.NodeOutcome("error", data={"error": str(exc)}, billed_calls=1)
+        image_path = attempt_dir / "image.png"
+        image_path.write_bytes(raw)
+        if not args.no_metadata:
+            _write_metadata(image_path, raw, prompt=prompt, provider=provider.name,
+                            model=model, ratio=ratio, background=background, refs=refs)
+        return flow.NodeOutcome(
+            "success", artifacts=[str(image_path)],
+            data={"prompt": prompt, "provider": provider.name, "model": model,
+                  "ratio": ratio, "path": str(image_path)},
+            billed_calls=1,
+        )
+
+    def image_review(node: flow.FlowNode, context: flow.FlowContext,
+                     attempt_dir: Path) -> flow.NodeOutcome:
+        config = flow.render_template(dict(node.config), context)
+        image_ref = config.get("image")
+        if not isinstance(image_ref, str):
+            raise flow.FlowError(f"node {node.id!r} requires an image ref")
+        image_path = Path(flow.resolve_artifact(image_ref, context)).expanduser()
+        data_url, _ = _flow_image_data_url(image_path)
+        reference_ref = config.get("reference")
+        reference_path: Path | None = None
+        reference_url: str | None = None
+        if reference_ref is not None:
+            if not isinstance(reference_ref, str):
+                raise flow.FlowError(f"node {node.id!r} reference must be a path or @node")
+            reference_path = Path(flow.resolve_artifact(reference_ref, context)).expanduser()
+            reference_url, reference_bytes = _flow_image_data_url(reference_path)
+            reference_snapshot = attempt_dir / (
+                "reference.jpg" if reference_url.startswith("data:image/jpeg")
+                else "reference.png"
+            )
+            reference_snapshot.write_bytes(reference_bytes)
+        else:
+            reference_snapshot = None
+        criteria = config.get("criteria") or []
+        if not isinstance(criteria, list) or not all(isinstance(item, str) for item in criteria):
+            raise flow.FlowError(f"node {node.id!r} criteria must be a list of strings")
+        threshold = config.get("threshold", 0.8)
+        if isinstance(threshold, bool) or not isinstance(threshold, (int, float)) \
+                or not 0 <= threshold <= 1:
+            raise flow.FlowError(f"node {node.id!r} threshold must be between 0 and 1")
+        original_prompt = config.get("prompt", context.state.get("prompt", ""))
+        review_prompt = (
+            "Evaluate the candidate image against every criterion"
+            + (" and compare it closely with the target reference image" if reference_url else "")
+            + ". Return JSON only with keys: "
+            "accepted (boolean), score (number 0..1), feedback (specific string), and "
+            "revised_prompt (a complete improved image-generation prompt). "
+            f"Acceptance threshold: {threshold}. Original prompt: {original_prompt!r}. "
+            f"Criteria: {json.dumps(criteria, ensure_ascii=False)}"
+        )
+        service = _flow_service(node, context)
+        try:
+            content = [{"type": "text", "text": review_prompt}]
+            if reference_url:
+                content.extend([
+                    {"type": "text", "text": "TARGET REFERENCE IMAGE:"},
+                    {"type": "image_url", "image_url": {"url": reference_url}},
+                    {"type": "text", "text": "CANDIDATE GENERATED IMAGE:"},
+                ])
+            content.append({"type": "image_url", "image_url": {"url": data_url}})
+            verdict = _flow_chat_json(client, service, messages=[{
+                "role": "user", "content": content,
+            }])
+        except Exception as exc:
+            return flow.NodeOutcome("error", data={"error": str(exc)}, billed_calls=1)
+        try:
+            accepted = verdict.get("accepted")
+            score = verdict.get("score")
+            feedback = verdict.get("feedback")
+            revised_prompt = verdict.get("revised_prompt")
+            if not isinstance(accepted, bool):
+                raise flow.FlowError("review field 'accepted' must be boolean")
+            if isinstance(score, bool) or not isinstance(score, (int, float)) \
+                    or not 0 <= score <= 1:
+                raise flow.FlowError("review field 'score' must be between 0 and 1")
+            if not isinstance(feedback, str) or not isinstance(revised_prompt, str) \
+                    or not revised_prompt:
+                raise flow.FlowError(
+                    "review feedback/revised_prompt must be non-empty strings"
+                )
+        except Exception as exc:
+            return flow.NodeOutcome("error", data={"error": str(exc)}, billed_calls=1)
+        accepted = accepted and score >= threshold
+        normalized = {"accepted": accepted, "score": score, "feedback": feedback,
+                      "revised_prompt": revised_prompt, "image": str(image_path),
+                      "reference": str(reference_snapshot) if reference_snapshot else None}
+        (attempt_dir / "verdict.json").write_text(
+            json.dumps(normalized, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+        return flow.NodeOutcome("accepted" if accepted else "rejected",
+                                data=normalized, billed_calls=1)
+
+    def prompt_refine(node: flow.FlowNode, context: flow.FlowContext,
+                      attempt_dir: Path) -> flow.NodeOutcome:
+        config = flow.render_template(dict(node.config), context)
+        prompt = config.get("prompt")
+        state_key = config.get("state_key", "prompt")
+        if not isinstance(prompt, str) or not prompt.strip():
+            raise flow.FlowError(f"node {node.id!r} resolved an empty prompt")
+        if not isinstance(state_key, str) or not state_key:
+            raise flow.FlowError(f"node {node.id!r} state_key must be a string")
+        (attempt_dir / "prompt.txt").write_text(prompt + "\n", encoding="utf-8")
+        return flow.NodeOutcome("success", state_patch={state_key: prompt},
+                                data={"prompt": prompt, "state_key": state_key})
+
+    try:
+        result = flow.run_flow(
+            spec,
+            {"image.describe": image_describe, "image.generate": image_generate,
+             "image.review": image_review,
+             "prompt.refine": prompt_refine},
+            run_dir=run_dir,
+            billed_calls_by_type={"image.generate": 1, "image.review": 1},
+        )
+    finally:
+        client.close()
+
+    print(f"flow: {result.status}, {len(result.history)} step(s), "
+          f"{result.billed_calls} billed call(s)", file=sys.stderr)
+    print(f"→ run: {run_dir}", file=sys.stderr)
+    payload = {
+        "ok": result.status == "succeeded", "status": result.status,
+        "terminal": result.terminal, "run_dir": str(run_dir),
+        "steps": len(result.history), "billed_calls": result.billed_calls,
+        "state": result.state, "artifacts": result.latest_artifacts,
+        "error": result.error,
+    }
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False))
+    else:
+        print(run_dir)
+    if result.status != "succeeded":
+        raise SystemExit(1)
+
+
+def _run_sequence(args, provider: Provider, model: str, key: str,
+                  out_dir: Path, stem: str, prompt: str) -> None:
+    """Run Seedream coherent-sequence mode and persist every returned image."""
+    client = make_client(args.timeout)
+    started = time.time()
+    try:
+        with _progress("generating sequence"):
+            images = call_with_retry(
+                lambda: provider_generate_sequence(
+                    provider, prompt, model, args.ref or [], args.ratio, key, client,
+                    max_images=args.max_images, idem_key=new_idempotency_key(), seed=args.seed,
+                ),
+                max_attempts=provider.max_retries,
+                backoff_floor=provider.backoff_floor,
+            )
+    except ProviderError as e:
+        if provider.bills_on_failure:
+            print("→ spent: one Ark request may be billable", file=sys.stderr)
+        if args.json:
+            print(json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False))
+            raise SystemExit(1)
+        sys.exit(f"error: {e}")
+    finally:
+        client.close()
+
+    clean_stem = stem.removesuffix(".png")
+    written: list[Path] = []
+    json_items: list[dict] = []
+    for index, raw in enumerate(images, start=1):
+        target = out_dir / (f"{clean_stem}.png" if len(images) == 1
+                            else f"{clean_stem}_{index}.png")
+        target.write_bytes(raw)
+        if not args.no_metadata:
+            _write_metadata(target, raw, prompt=prompt, provider=provider.name,
+                            model=model, ratio=args.ratio, background=args.background,
+                            refs=args.ref or [])
+        width, height, _ = probe.image_dims(raw)
+        written.append(target)
+        json_items.append({"ok": True, "path": str(target), "error": None,
+                           "width": width, "height": height})
+
+    print(f"✓ generated {len(written)} image(s) in {time.time() - started:.1f}s",
+          file=sys.stderr)
+    print(f"→ spent: {_sequence_cost_phrase(len(written))}", file=sys.stderr)
+    if args.json:
+        print(json.dumps(json_items, ensure_ascii=False))
+    else:
+        for path in written:
+            print(path)
+    if len(written) == 1 and not args.no_preview and not args.json:
+        kitty_preview(written[0])
+    if args.open:
+        _reveal(written)
 
 
 def main() -> None:
@@ -992,15 +1787,27 @@ def main() -> None:
     if args.count < 1:
         sys.exit("error: --count must be >= 1")
 
-    if args.count != 1 and (args.batch_file or args.dag_file):
-        sys.exit("error: --count applies to single-prompt mode only "
-                 "(not with --batch-file/--dag-file)")
+    selected_modes = sum(bool(value) for value in (args.batch_file, args.dag_file, args.flow_file))
+    if selected_modes > 1:
+        sys.exit("error: --batch-file, --dag-file, and --flow-file are mutually exclusive")
 
-    if args.open and (args.batch_file or args.dag_file):
-        print("→ warning: --open ignored with --batch-file/--dag-file "
+    if args.max_images is not None and not 1 <= args.max_images <= 15:
+        sys.exit("error: --max-images must be between 1 and 15")
+    if args.max_images is not None and not args.sequential:
+        sys.exit("error: --max-images requires --sequential")
+    if args.sequential and (args.batch_file or args.dag_file or args.flow_file or args.count != 1):
+        sys.exit("error: --sequential is single-prompt mode only and cannot be combined "
+                 "with --count/--batch-file/--dag-file/--flow-file")
+
+    if args.count != 1 and (args.batch_file or args.dag_file or args.flow_file):
+        sys.exit("error: --count applies to single-prompt mode only "
+                 "(not with --batch-file/--dag-file/--flow-file)")
+
+    if args.open and (args.batch_file or args.dag_file or args.flow_file):
+        print("→ warning: --open ignored with --batch-file/--dag-file/--flow-file "
               "(single/--count only)", file=sys.stderr)
 
-    if args.batch_file or args.dag_file:
+    if args.batch_file or args.dag_file or args.flow_file:
         prompt = args.prompt or ""
     else:
         prompt = args.prompt if args.prompt else sys.stdin.read().strip()
@@ -1015,6 +1822,10 @@ def main() -> None:
         else Path.home() / "Pictures" / OUTPUT_SUBDIR
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    if args.flow_file:
+        _run_flow_file(args, out_dir)
+        return
+
     if args.dag_file:
         _run_dag_file(args, out_dir)
         return
@@ -1022,8 +1833,13 @@ def main() -> None:
     if args.ratio not in VALID_RATIOS:
         sys.exit(f"error: invalid ratio {args.ratio!r}; choose from {sorted(VALID_RATIOS)}")
 
-    provider = resolve_provider(args.provider)
+    provider = _resolve_provider_for_args(args)
     model = args.model or provider.default_model
+
+    provider = apply_model_dialect(provider, model)
+
+    if args.sequential and provider.gen_style != "ark":
+        sys.exit("error: --sequential is only supported by -p volcengine")
 
     stem = args.name or f"img_{datetime.now():%Y%m%d_%H%M%S}"
 
@@ -1057,6 +1873,11 @@ def main() -> None:
     if args.seed is not None and not provider.supports_seed:
         _warn_seed_unsupported(provider)  # once per run, before the loop
 
+    if args.sequential:
+        key = require_key(provider.key_env)
+        _run_sequence(args, provider, model, key, out_dir, stem, prompt)
+        return
+
     key = require_key(provider.key_env)
     client = make_client(args.timeout)
     clean_stem = stem.removesuffix(".png")
@@ -1083,14 +1904,15 @@ def main() -> None:
             try:
                 with _progress("generating"):
                     raw = call_with_retry(lambda s=img_seed: _attempt(s),
-                                          max_attempts=provider.max_retries)
+                                          max_attempts=provider.max_retries,
+                                          backoff_floor=provider.backoff_floor)
             except ProviderError as e:
                 # Surface cost already billed before aborting (providers with
-                # bills_on_failure bill the failed call too; successful siblings
-                # were billed regardless).
+                # bills_on_failure charge for the failed call too; successful
+                # siblings were billed regardless).
                 billed = len(written) + (1 if provider.bills_on_failure else 0)
                 if billed:
-                    print(f"→ spent: {_cost_phrase({provider.name: billed})}",
+                    print(f"→ spent: {_cost_phrase({provider.name: billed}, {provider.name: model})}",
                           file=sys.stderr)
                 if args.json:
                     if count == 1:
@@ -1114,7 +1936,8 @@ def main() -> None:
         client.close()
 
     # cost summary for the real run (302ai bills each call; others vary)
-    print(f"→ spent: {_cost_phrase({provider.name: count})}", file=sys.stderr)
+    print(f"→ spent: {_cost_phrase({provider.name: count}, {provider.name: model})}",
+          file=sys.stderr)
 
     if args.json:
         if count == 1:

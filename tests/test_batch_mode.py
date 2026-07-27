@@ -14,7 +14,7 @@ Contract under test:
     "降级" or "concurrency" (case-insensitive).
 
 This test file is written BEFORE run_batch exists (RED state of TDD). It must
-never touch real network / provider code -- everything is driven via
+never touch the real network -- everything is driven via
 dependency-injected fake call_fn callables.
 """
 

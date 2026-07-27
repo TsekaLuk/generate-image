@@ -20,7 +20,7 @@ _PNG_B = b"BBBB-image-from-task-B"
 
 
 @pytest.fixture(autouse=True)
-def _default_key(monkeypatch):
+def _openai_key(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
 
 
@@ -96,9 +96,7 @@ def test_dag_skip_policy_skips_descendants_of_failure(tmp_path, monkeypatch):
 def test_dag_spent_counts_only_tasks_that_ran(tmp_path, monkeypatch, capsys):
     """A fails, B depends on A (skipped), C is independent (runs). The '→ spent:'
     summary must count only the tasks that actually issued a billed call (A + C),
-    NOT the skipped descendant B. Pinned to 302ai, which has a fixed per-image
-    price, so the exact ¥ amount can be asserted."""
-    monkeypatch.setenv("AI302_API_KEY", "test-key")
+    NOT the skipped descendant B."""
     out_dir = tmp_path / "out"
 
     def handler(req):
@@ -109,10 +107,13 @@ def test_dag_spent_counts_only_tasks_that_ran(tmp_path, monkeypatch, capsys):
         return httpx.Response(200, json={"data": [{"b64_json": base64.b64encode(_PNG_A).decode()}]})
 
     _install(monkeypatch, handler)
+    # 302ai: the one public provider with a known per-image price, so the spent
+    # line can assert an amount rather than "cost varies".
+    monkeypatch.setenv("AI302_API_KEY", "k")
     spec = {"tasks": [
         {"id": "A", "prompt": "will fail", "provider": "302ai"},
-        {"id": "B", "prompt": "styled from A", "refs": ["@A"], "provider": "302ai"},  # skipped
-        {"id": "C", "prompt": "independent scene", "provider": "302ai"},              # runs
+        {"id": "B", "prompt": "styled from A", "refs": ["@A"], "provider": "302ai"},
+        {"id": "C", "prompt": "independent scene", "provider": "302ai"},
     ]}
     spec_path = _write_spec(tmp_path, spec)
     monkeypatch.setattr(sys, "argv", [
