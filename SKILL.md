@@ -100,7 +100,7 @@ large run because pricing and activation are account-specific.
 | 参数 | 官方契约(2.5) | 我们发吗 | 实测 |
 |---|---|---|---|
 | `size` | 自定义 WxH:16 的倍数、比例 1:3~3:1、单边 ≤3840、总像素 655,360~8,294,400 | ✅ 发精确比例值 | 302ai 实测原样返回(`1792x768`、`2048x2048`) |
-| `quality` | `low`/`medium`/`high`/**`xhigh`**/**`max`**/`auto`(后两档 2.5 新增) | ❌ 从不发 | ⚠️ **36 倍成本杠杆**,见下 |
+| `quality` | `low`/`medium`/`high`/**`xhigh`**/**`max`**/`auto`(后两档 2.5 新增) | ✅ `--quality`(默认不发) | ⚠️ **36 倍成本杠杆**,见下 |
 | `background` | `transparent`/`opaque`/`auto` | ✅ 发 | 官方 API 支持 |
 | `input_fidelity` | `high`/`low`,**仅 edits**,控制对参考图(尤其人脸)的还原力度 | ❌ 从不发 | 发给 generations 不报错但行为不稳(302ai 上那次返回尺寸与请求不符);**别用在 generations 上;edits 路径未测** |
 | `output_format` | `png`/`jpeg`/`webp` | ❌ 从不发(默认 png) | 未测 |
@@ -108,19 +108,51 @@ large run because pricing and activation are account-specific.
 | `moderation` | `auto`/`low` | ❌ 从不发 | 未测 |
 | `n` | 1-10 | ✅ 恒为 1(多图走 `--count`) | — |
 
-### ⚠️ `quality` 是 36 倍的成本杠杆,而报价器不知道它存在
+### `--quality` —— 36 倍的成本杠杆,所以带护栏
 
-302ai 上同一提示词、同样 1024²、只改 `quality`(2026-09-16 实测):
+**默认不传就一个字节都不多发**,跑在服务端 `auto` 档,行为与这个开关存在之前完全一致。
 
-| quality | output_tokens | 折合 ¥ | 耗时 |
+同一提示词、同样 1024²、只改 `quality`(2026-09-16 实测,
+按 `usage.output_tokens` × $30/1M 折算):
+
+| quality | output_tokens | 折合 ¥ | 相对 `low` |
 |---|---|---|---|
-| `low` | 196 | ≈¥0.042 | 57.5s |
-| `max` | **7024** | **≈¥1.5** | 108.2s |
+| (不传) | 196 | ≈¥0.042 | 1.0x |
+| `low` | 196 | ≈¥0.042 | 1.0x |
+| `medium` | 439 | ≈¥0.095 | 2.2x |
+| `high` | 1756 | ≈¥0.379 | 9.0x |
+| `xhigh` | 3122 | ≈¥0.674 | 15.9x |
+| `max` | **7024** | **≈¥1.517** | **35.8x** |
 
-`cli._unit_cost()` 只按 `provider/model` 查表,**没有 quality 这一维**。
-所以**现在不暴露 `--quality` 是有意的**:在一个失败也计费 + 自动重试 +
-批量 DAG 的工具里,先有 36x 放大器再有护栏,一个 `--batch-file` 配 `max` 就是事故。
-要加这个开关,必须同时改成本预估、`--dry-run` 报价和批量模式的上限。
+**三道护栏,都在发请求之前生效:**
+
+1. **能力校验** —— 只在确认真认这个参数的 provider 上发。中转常常收下 `quality`
+   却什么都不改,那等于**为一个没生效的档位付钱**,所以客户端硬拒;
+   `147ai` 的画质档由模型名承载(`gpt-image-2-low/-medium/-high`),也不发。
+   `-p auto` 在带 `--quality` 时会直接绕开这些 provider,不会先路由过去再报错。
+2. **档位/模型校验** —— `xhigh`/`max` 是 2.5 专属。实测把 `xhigh` 发给
+   `gpt-image-2` **不报错**(HTTP 200,档位被无视),服务端不会告诉你,
+   所以只能客户端拦。
+3. **花费护栏** —— 预估超过 **¥5** 就中止,并把金额和放行方式写在错误里:
+
+```
+$ ./generate.py -p 302ai --quality max --count 5 "..."
+error: --quality max over 5 image(s) is estimated at ≈¥7.58, above the ¥5 default
+ceiling (¥5). Nothing was sent. Re-run with --yes-costs 7.58 (or higher) to
+proceed, lower --count/--quality, or drop --quality to use the server default tier.
+```
+
+   单张 `max`(≈¥1.52)在阈值内,试验不受影响;拦的是 `--batch-file` / `--count`
+   配高档这种事故。用 `--yes-costs <金额>` 显式写出你接受的上限放行 ——
+   写金额而不是布尔,是为了让"我知道这次要花多少"变成一个必须动脑的动作。
+
+**未实测的档位报 "cost varies",不会退回低档价。** 退回低档价会在最危险的方向上
+撒谎(你看到 ¥0.04、实际付 ¥1.5)。而且**未知价格的高档比已知的更危险**,
+所以 `xhigh`/`max` 在报不出价时同样被拦,必须显式 `--yes-costs` 才放行。
+
+`--dry-run`、`--json` 的 `estimated_cost_cny`、事后的 `→ spent:` 三处报价
+**都按档位算**,不会互相打架。sidecar 也记录 `quality`(不传时为 `null`,
+与历史图片可比)。
 
 ### 已修:`-r` 曾被三值枚举压成错误画幅
 
@@ -190,6 +222,13 @@ Retries, backoff, rate limiting and adaptive concurrency are built in
   N in the count and cost. On a mid-sequence failure it aborts but first prints the
   `→ spent:` line for the calls already billed. With `--seed`, siblings use `seed, seed+1, …`
   so a deterministic provider doesn't return N identical images (image 1 keeps the exact seed).
+- **`--quality low|medium|high|xhigh|max|auto`** — gpt-image quality tier.
+  **Omitted by default and then nothing is sent** (server default tier, unchanged
+  behaviour). `xhigh`/`max` are 2.5-only. Cost scales steeply — see the 参数支持矩阵
+  for the measured ladder and the three guards.
+- **`--yes-costs CNY`** — accept a run whose estimated spend is up to this many ¥.
+  Required once `--quality` pushes the estimate over ¥5, or when a high tier's
+  price is unknown. Nothing is sent until it is satisfied.
 - **`--seed N`** — reproducibility seed, honored by **siliconflow** and
   **volcengine**; on `openai`/`302ai`/`openrouter` it is ignored with a **single** stderr warning per run
   (not once per image/task).

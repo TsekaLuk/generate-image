@@ -60,6 +60,12 @@ class Provider:
     default_concurrency: int         # starting concurrency for batch mode
     max_ref_images: int              # how many --ref images img2img accepts (0 = no edit)
     supports_seed: bool              # honors a `seed` param for reproducible output
+    # Honors the OpenAI `quality` tier for real. Set this ONLY where it holds: a
+    # relay can accept the field and change nothing, so you would pay for a tier you
+    # never got. 147ai must stay False for a different reason — there the tier rides
+    # in the MODEL NAME (gpt-image-2-low/-medium/-high), so a `quality` field would
+    # fight the model id.
+    supports_quality: bool = False
     # Re-issue a request whose CONNECTION broke mid-flight (SSL EOF / reset), even
     # when bills_on_failure and there is no idempotency key. Set this only where the
     # failure is known to be billed anyway, so not retrying costs the same and just
@@ -78,6 +84,21 @@ class Provider:
     # unusable until {PREFIX}_BASE_URL is set. Routing skips such a provider entirely
     # so credentials are never sent to a guessed address.
     requires_base_url: bool = False
+
+
+# --- quality tiers ------------------------------------------------------------
+# gpt-image quality ladder. `low`/`medium`/`high` are the long-standing set;
+# GPT Image 2.5 (2026-09-08) added `xhigh` and `max` ABOVE the old ceiling.
+VALID_QUALITY_TIERS = ("low", "medium", "high", "xhigh", "max", "auto")
+# The two tiers that exist only on 2.5. Listed explicitly rather than sniffed out of
+# the model string: `"2.5" in model` would happily pass a future gpt-image-3 that
+# does not have them, and the failure would surface as a billed no-op — measured on
+# a relay, `xhigh` on gpt-image-2 returns HTTP 200 and simply ignores the tier.
+EXTENDED_QUALITY_TIERS = frozenset({"xhigh", "max"})
+EXTENDED_QUALITY_MODELS = frozenset({
+    "gpt-image-2.5-flare", "gpt-image-2.5-sunburst",
+    "gpt-image-2.5", "gpt-image-2.5-dev",
+})
 
 
 # --- aspect ratio -> size string ----------------------------------------------
@@ -188,6 +209,7 @@ PROVIDERS: dict[str, Provider] = {
         default_concurrency=3,
         max_ref_images=16,  # OpenAI gpt-image edits accept up to 16 image[] parts
         supports_seed=False,  # gpt-image has no seed param
+        supports_quality=True,  # `quality` is part of the published images contract
     ),
     "302ai": Provider(
         name="302ai",
@@ -225,6 +247,9 @@ PROVIDERS: dict[str, Provider] = {
         default_concurrency=3,
         max_ref_images=16,  # gpt-image edits (aggregated)
         supports_seed=False,  # gpt-image relay ignores seed
+        # Measured 2026-09-16: quality is honored here — at 1024², output_tokens go
+        # low/auto 196 -> medium 439 -> high 1756 -> xhigh 3122 -> max 7024 (35.8x).
+        supports_quality=True
     ),
     "openrouter": Provider(
         name="openrouter",
@@ -438,6 +463,7 @@ def provider_is_configured(provider: Provider) -> bool:
 
 def route_provider(*, model: str | None = None, ref_count: int = 0,
                    background: str | None = None, seed: int | None = None,
+                   quality: str | None = None,
                    allow_unconfigured: bool = False) -> Provider:
     """Choose the best provider for one CLI request.
 
@@ -465,6 +491,14 @@ def route_provider(*, model: str | None = None, ref_count: int = 0,
         effective_model = model or provider.default_model
         if background and effective_model in provider.background_unsupported:
             continue
+        # A pinned quality tier is a hard capability, exactly like background: a
+        # backend that ignores `quality` would bill for a tier it never applied.
+        if quality and quality != "auto":
+            if not provider.supports_quality:
+                continue
+            if (quality in EXTENDED_QUALITY_TIERS
+                    and effective_model not in EXTENDED_QUALITY_MODELS):
+                continue
         model_match = int(model is None or model in provider.models)
         seed_match = int(seed is None or provider.supports_seed)
         score = (int(configured), model_match, seed_match, -priority)
@@ -476,6 +510,8 @@ def route_provider(*, model: str | None = None, ref_count: int = 0,
             detail.append(f"{ref_count} reference image(s)")
         if background:
             detail.append(f"background={background}")
+        if quality:
+            detail.append(f"quality={quality}")
         if model:
             detail.append(f"model={model}")
         suffix = f" for {', '.join(detail)}" if detail else ""

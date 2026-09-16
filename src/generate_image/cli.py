@@ -39,6 +39,9 @@ from . import flow
 from . import probe
 from . import __version__ as PKG_VERSION
 from .providers import (
+    EXTENDED_QUALITY_MODELS,
+    EXTENDED_QUALITY_TIERS,
+    VALID_QUALITY_TIERS,
     PROVIDERS,
     AUTO_PROVIDER,
     DEFAULT_IMAGE_CONFIG_SIZE,
@@ -311,6 +314,36 @@ def _shape_prompt(provider: Provider, prompt: str, ratio: str) -> str:
     return f"{prompt}。{hint}" if hint else prompt
 
 
+def _guard_quality(provider: Provider, model: str, quality: str | None) -> None:
+    """Refuse a quality tier the backend cannot honor, before anything is billed.
+
+    Both failure modes here are SILENT on the wire, which is why they have to be
+    caught client-side (measured 2026-09-16):
+      * a provider that ignores `quality` returns a normal image at the default
+        tier, so you pay and never learn the tier did nothing;
+      * `xhigh` on a non-2.5 model (gpt-image-2) returned HTTP 200 as well — no
+        rejection, the tier is simply meaningless there.
+    """
+    if not quality or quality == "auto":
+        return
+    if not provider.supports_quality:
+        raise ProviderError(
+            f"quality={quality!r} is not honored by {provider.name} (it accepts the "
+            f"field and silently ignores it, so you would pay for a tier you never "
+            f"got) — omit --quality, or use a provider whose quality support is "
+            f"measured (currently: "
+            f"{', '.join(sorted(n for n, p in PROVIDERS.items() if p.supports_quality))})",
+            retryable=False,
+        )
+    if quality in EXTENDED_QUALITY_TIERS and model not in EXTENDED_QUALITY_MODELS:
+        raise ProviderError(
+            f"quality={quality!r} only exists on GPT Image 2.5 models; {model!r} "
+            f"accepts it without error and ignores it (measured). Pick one of "
+            f"{', '.join(sorted(EXTENDED_QUALITY_MODELS))}, or use a tier up to 'high'",
+            retryable=False,
+        )
+
+
 def _guard_background(provider: Provider, model: str, background: str | None) -> None:
     if background and model in provider.background_unsupported:
         raise ProviderError(
@@ -348,9 +381,10 @@ def _ark_supports_sequence(model: str) -> bool:
 def provider_generate(provider: Provider, prompt: str, model: str, ratio: str,
                       key: str, client: httpx.Client, *,
                       background: str | None = None, idem_key: str | None = None,
-                      seed: int | None = None) -> bytes:
+                      seed: int | None = None, quality: str | None = None) -> bytes:
     """Text-to-image via the provider's generation endpoint."""
     _guard_background(provider, model, background)
+    _guard_quality(provider, model, quality)
     if provider.gen_style == "ark":
         body: dict = {
             "model": model,
@@ -383,6 +417,10 @@ def provider_generate(provider: Provider, prompt: str, model: str, ratio: str,
     # unknown top-level key, so it is only sent on the image-generation dialects.
     if background and provider.gen_style != "chat_image_config":
         body["background"] = background
+    # `quality` rides the same dialects as `size`. The guard above already refused
+    # it everywhere it would be ignored, so reaching here means it is honored.
+    if quality and quality != "auto" and provider.supports_quality:
+        body["quality"] = quality
     # Seed is only sent where supported; the unsupported-seed warning is emitted
     # ONCE per run by the caller (see _warn_seed_unsupported), not per request, so
     # --count/batch/dag don't spam N identical warnings.
@@ -451,7 +489,8 @@ def _read_refs(refs: list[str], client: httpx.Client) -> list[tuple[bytes, str, 
 
 def provider_edit(provider: Provider, prompt: str, model: str, refs: list[str],
                   ratio: str, key: str, client: httpx.Client, *,
-                  background: str | None = None, idem_key: str | None = None) -> bytes:
+                  background: str | None = None, idem_key: str | None = None,
+                  quality: str | None = None) -> bytes:
     """Image-to-image (垫图), dispatched by the provider's edit_style."""
     if provider.edit_path is None or provider.edit_style is None:
         raise ProviderError(
@@ -695,8 +734,52 @@ COST_CNY_PER_IMAGE_BY_MODEL: dict[str, float] = {
 }
 
 
-def _unit_cost(provider_name: str, model: str | None) -> float | None:
-    """Per-image ¥ for a provider, refined by model where the price varies by model."""
+# A run is stopped for confirmation above this estimate. ~3 images at the `max`
+# tier (measured ¥1.517 each): a single experiment stays frictionless, while
+# --batch-file at a high tier — the accident this guard exists for — is caught.
+COST_CONFIRM_THRESHOLD_CNY = 5.0
+
+
+# Per-image ¥ once a quality tier is pinned. Measured on 302ai 2026-09-16, same
+# prompt at 1024², converting usage.output_tokens at $30/1M:
+#   (no quality) 196 tok   high      1756 tok
+#   low          196 tok   xhigh     3122 tok
+#   medium       439 tok   max       7024 tok  <- 35.8x the low tier
+# Only combinations that were actually measured appear here. An unmeasured
+# provider/model/quality deliberately falls through to None ("cost varies") rather
+# than to the un-toned price: quoting ¥0.04 for a call that bills ¥1.5 would be
+# lying in the one direction that costs the user money.
+COST_CNY_PER_IMAGE_BY_QUALITY: dict[str, float] = {
+    "302ai/gpt-image-2.5-flare@low": 0.042,
+    "302ai/gpt-image-2.5-flare@medium": 0.095,
+    "302ai/gpt-image-2.5-flare@high": 0.379,
+    "302ai/gpt-image-2.5-flare@xhigh": 0.674,
+    "302ai/gpt-image-2.5-flare@max": 1.517,
+}
+
+
+# A run is stopped for confirmation above this estimate. ~3 images at the `max`
+# tier (measured ¥1.517 each): a single experiment stays frictionless, while
+# --batch-file at a high tier — the accident this guard exists for — is caught.
+COST_CONFIRM_THRESHOLD_CNY = 5.0
+
+
+def _unit_cost(provider_name: str, model: str | None,
+               quality: str | None = None) -> float | None:
+    """Per-image ¥, refined by model and then by quality tier where measured.
+
+    Lookup order is provider/model@quality -> provider/model -> provider. A pinned
+    quality that has no measured price returns None so the caller prints
+    "cost varies"; see COST_CNY_PER_IMAGE_BY_QUALITY for why it must not fall back
+    to the cheaper un-toned number.
+    """
+    if model and quality and quality != "auto":
+        per = COST_CNY_PER_IMAGE_BY_QUALITY.get(f"{provider_name}/{model}@{quality}")
+        if per is not None:
+            return per
+        # A tier was explicitly requested but never measured here: refuse to guess.
+        if provider_name in COST_CNY_PER_IMAGE or f"{provider_name}/{model}" in COST_CNY_PER_IMAGE_BY_MODEL:
+            return None
     if model:
         per = COST_CNY_PER_IMAGE_BY_MODEL.get(f"{provider_name}/{model}")
         if per is not None:
@@ -705,7 +788,8 @@ def _unit_cost(provider_name: str, model: str | None) -> float | None:
 
 
 def _billed_cost(counts: dict[str, int],
-                 models: dict[str, str] | None = None) -> tuple[float | None, int, list[str]]:
+                 models: dict[str, str] | None = None,
+                 quality: str | None = None) -> tuple[float | None, int, list[str]]:
     """Reduce a {provider: image_count} tally to
     (known_total_cny_or_None, total_billed_calls, providers_with_varying_cost).
 
@@ -718,7 +802,7 @@ def _billed_cost(counts: dict[str, int],
     varies: list[str] = []
     for name, c in counts.items():
         billed += c
-        per = _unit_cost(name, (models or {}).get(name))
+        per = _unit_cost(name, (models or {}).get(name), quality)
         if per is None:
             if name not in varies:
                 varies.append(name)
@@ -728,10 +812,48 @@ def _billed_cost(counts: dict[str, int],
     return (round(total, 4) if known else None, billed, varies)
 
 
-def _cost_phrase(counts: dict[str, int], models: dict[str, str] | None = None) -> str:
+def _guard_run_cost(counts: dict[str, int], models: dict[str, str] | None,
+                    quality: str | None, yes_costs: float | None) -> None:
+    """Stop an expensive run BEFORE the first request is billed.
+
+    Only engages once a quality tier is explicitly pinned — without --quality the
+    behaviour and the spend are exactly what they were before this flag existed.
+    Two distinct refusals:
+      * the estimate exceeds the threshold (or the user's own --yes-costs ceiling);
+      * an EXTENDED tier whose price is unknown here. An unknown high tier is more
+        dangerous than a known one, so it is not waved through on ignorance.
+    """
+    if not quality or quality == "auto":
+        return
+    total, billed, varies = _billed_cost(counts, models, quality)
+    ceiling = yes_costs if yes_costs is not None else COST_CONFIRM_THRESHOLD_CNY
+    if total is None or varies:
+        if quality in EXTENDED_QUALITY_TIERS and yes_costs is None:
+            raise ProviderError(
+                f"--quality {quality} over {billed} image(s) on {', '.join(varies) or 'this provider'}: "
+                f"the per-image price at this tier is not measured here, so the spend "
+                f"cannot be estimated. Re-run with --yes-costs <CNY> to accept an "
+                f"unbounded-but-capped cost, or use a tier up to 'high'.",
+                retryable=False,
+            )
+        return
+    if total > ceiling:
+        limit = ("your --yes-costs ceiling" if yes_costs is not None
+                 else f"the ¥{COST_CONFIRM_THRESHOLD_CNY:g} default ceiling")
+        raise ProviderError(
+            f"--quality {quality} over {billed} image(s) is estimated at ≈¥{total:.2f}, "
+            f"above {limit} (¥{ceiling:g}). Nothing was sent. Re-run with "
+            f"--yes-costs {total:.2f} (or higher) to proceed, lower --count/--quality, "
+            f"or drop --quality to use the server default tier.",
+            retryable=False,
+        )
+
+
+def _cost_phrase(counts: dict[str, int], models: dict[str, str] | None = None,
+                 quality: str | None = None) -> str:
     """Human cost phrase shared by --dry-run and the post-run summary, e.g.
     '≈ ¥0.30 (3 billed call(s))' or 'cost varies for openrouter (1 billed call(s))'."""
-    total, billed, varies = _billed_cost(counts, models)
+    total, billed, varies = _billed_cost(counts, models, quality)
     parts: list[str] = []
     if total is not None:
         parts.append(f"≈ ¥{total:.2f}")
@@ -800,7 +922,7 @@ def _reveal(paths: list[Path]) -> None:
 
 def _write_metadata(png_path: Path, raw: bytes, *, prompt: str, provider: str,
                     model: str, ratio: str, background: str | None,
-                    refs: list[str]) -> None:
+                    refs: list[str], quality: str | None = None) -> None:
     """Write a <name>.json sidecar next to a generated PNG (opt out via --no-metadata).
 
     Dimensions are decoded from the exact bytes that were written, via
@@ -812,6 +934,9 @@ def _write_metadata(png_path: Path, raw: bytes, *, prompt: str, provider: str,
         "model": model,
         "ratio": ratio,
         "background": background,
+        # None means "server default tier" — the state every image had before
+        # --quality existed, so old sidecars and new ones stay comparable.
+        "quality": quality,
         "refs": list(refs or []),
         "width": w,
         "height": h,
@@ -849,6 +974,7 @@ def _resolve_provider_for_args(args, *, allow_unconfigured: bool = False) -> Pro
                 ref_count=len(args.ref or []),
                 background=args.background,
                 seed=args.seed,
+                quality=args.quality,
                 allow_unconfigured=allow_unconfigured,
             )
         except ValueError as exc:
@@ -928,6 +1054,18 @@ def parse_args() -> argparse.Namespace:
                     help="reference image URL or local path for img2img (≤10MB each). "
                          "Repeat for multi-image compositing where supported "
                          "(openai/302ai up to 16, volcengine up to 10, openrouter varies, siliconflow 1).")
+    ap.add_argument("--quality", choices=list(VALID_QUALITY_TIERS), default=None,
+                    help="gpt-image quality tier. Omit to use the server default "
+                         "(nothing is sent). 'xhigh'/'max' exist only on GPT Image "
+                         "2.5. COSTS SCALE STEEPLY: measured, 'max' bills ~36x 'low' "
+                         "per image — a run whose estimate exceeds "
+                         f"¥{COST_CONFIRM_THRESHOLD_CNY:g} is refused unless you pass "
+                         "--yes-costs with a ceiling you accept.")
+    ap.add_argument("--yes-costs", type=float, default=None, metavar="CNY",
+                    help="accept a run whose estimated spend is up to this many ¥. "
+                         "Required once a quality tier pushes the estimate over "
+                         f"¥{COST_CONFIRM_THRESHOLD_CNY:g}, or when the cost of a "
+                         "high tier cannot be estimated at all.")
     ap.add_argument("--background", choices=("auto", "opaque", "transparent"), default=None,
                     help="request a transparent/opaque background where the provider/model "
                          "supports it; hard-refused on models known not to (e.g. Seedream).")
@@ -1028,6 +1166,7 @@ def _resolve_task_provider(task: dag.Task, args, *, allow_unconfigured: bool = F
                 ref_count=len(task.refs),
                 background=task.background,
                 seed=args.seed,
+                quality=args.quality,
                 allow_unconfigured=allow_unconfigured,
             )
         except ValueError as exc:
@@ -1152,11 +1291,14 @@ def _dry_run_plan(args) -> None:
             routed.append(prov)
         counts = Counter(routed)
         print(f"→ images:   {len(tasks)}", file=sys.stderr)
-        print(f"→ cost:     {_cost_phrase(counts)}", file=sys.stderr)
+        print(f"→ cost:     {_cost_phrase(counts, quality=args.quality)}", file=sys.stderr)
         if args.json:
             print(json.dumps({
                 "mode": "dag", "images": len(tasks),
-                "estimated_cost_cny": _billed_cost(counts)[0], "tasks": json_tasks,
+                # Must carry the tier too: the JSON estimate is what scripts read,
+                # so an un-toned number here is the same lie in a worse place.
+                "estimated_cost_cny": _billed_cost(counts, None, args.quality)[0],
+                "tasks": json_tasks,
             }, ensure_ascii=False))
         return
 
@@ -1194,12 +1336,13 @@ def _dry_run_plan(args) -> None:
     print(f"→ ratio:    {args.ratio}", file=sys.stderr)
     print(f"→ images:   {n}", file=sys.stderr)
     models = {provider.name: model}
-    print(f"→ cost:     {_cost_phrase(counts, models)}", file=sys.stderr)
+    print(f"→ cost:     {_cost_phrase(counts, models, args.quality)}", file=sys.stderr)
     if args.json:
         print(json.dumps({
             "mode": "batch" if args.batch_file else "single",
             "provider": provider.name, "model": model, "ratio": args.ratio,
-            "images": n, "estimated_cost_cny": _billed_cost(counts, models)[0],
+            "images": n,
+            "estimated_cost_cny": _billed_cost(counts, models, args.quality)[0],
         }, ensure_ascii=False))
 
 
@@ -1219,6 +1362,15 @@ def _run_batch_file(args, provider: Provider, model: str, key: str,
     bucket = TokenBucket(rpm)
     limiter = AdaptiveConcurrency(concurrency, concurrency)
     jobs = [{"index": i, "prompt": p} for i, p in enumerate(prompts, start=1)]
+    # The accident this guard exists for: N prompts x a high tier. Capability first,
+    # then cost; checked once, before the first job is dispatched. No-op without
+    # --quality.
+    try:
+        _guard_quality(provider, model, args.quality)
+        _guard_run_cost({provider.name: len(jobs)}, {provider.name: model},
+                        args.quality, args.yes_costs)
+    except ProviderError as exc:
+        sys.exit(f"error: {exc}")
 
     def _throttle_cb(retry_state) -> None:
         exc = retry_state.outcome.exception()
@@ -1230,7 +1382,8 @@ def _run_batch_file(args, provider: Provider, model: str, key: str,
         raw = call_with_retry(
             lambda: provider_generate(provider, job["prompt"], model, args.ratio,
                                       key, client, background=args.background,
-                                      idem_key=idem, seed=args.seed),
+                                      idem_key=idem, seed=args.seed,
+                                      quality=args.quality),
             max_attempts=provider.max_retries,
             backoff_floor=provider.backoff_floor,
             before_sleep=_throttle_cb,
@@ -1257,7 +1410,7 @@ def _run_batch_file(args, provider: Provider, model: str, key: str,
         png.write_bytes(r["result"])
         if not args.no_metadata:
             _write_metadata(png, r["result"], prompt=job["prompt"], provider=provider.name,
-                            model=model, ratio=args.ratio, background=args.background, refs=[])
+                            model=model, ratio=args.ratio, background=args.background, refs=[], quality=args.quality)
         json_items.append({"index": job["index"], "ok": True, "path": str(png), "error": None})
         succeeded += 1
 
@@ -1265,7 +1418,7 @@ def _run_batch_file(args, provider: Provider, model: str, key: str,
     print(f"batch: {succeeded}/{total} succeeded", file=sys.stderr)
     # Some providers (302ai) bill success AND failure, so every attempted job is a
     # billed call there; _cost_phrase reports per provider.
-    print(f"→ spent: {_cost_phrase({provider.name: total}, {provider.name: model})}",
+    print(f"→ spent: {_cost_phrase({provider.name: total}, {provider.name: model}, args.quality)}",
           file=sys.stderr)
     if args.json:
         print(json.dumps(json_items, ensure_ascii=False))
@@ -1331,9 +1484,9 @@ def _run_dag_file(args, out_dir: Path) -> None:
         def attempt() -> bytes:
             if refs:
                 return provider_edit(provider, task.prompt, model, refs, ratio, key,
-                                     client, background=task.background, idem_key=idem)
+                                     client, background=task.background, idem_key=idem, quality=args.quality)
             return provider_generate(provider, task.prompt, model, ratio, key, client,
-                                     background=task.background, idem_key=idem, seed=args.seed)
+                                     background=task.background, idem_key=idem, seed=args.seed, quality=args.quality)
 
         with limiter.slot():
             bucket.acquire()
@@ -1390,7 +1543,7 @@ def _run_dag_file(args, out_dir: Path) -> None:
         for t in tasks if results[t.id].status in (dag.SUCCESS, dag.FAILED)
     )
     if billed_counts:
-        print(f"→ spent: {_cost_phrase(billed_counts)}", file=sys.stderr)
+        print(f"→ spent: {_cost_phrase(billed_counts, quality=args.quality)}", file=sys.stderr)
     if args.json:
         print(json.dumps(json_items, ensure_ascii=False))
     if n_ok == 0:
@@ -1568,7 +1721,8 @@ def _run_flow_file(args, out_dir: Path) -> None:
         if requested == AUTO_PROVIDER:
             try:
                 provider = route_provider(model=config.get("model"), ref_count=len(refs),
-                                          background=background, seed=args.seed)
+                                          background=background, seed=args.seed,
+                                          quality=args.quality)
             except ValueError as exc:
                 raise flow.FlowError(f"node {node.id!r}: {exc}") from exc
         else:
@@ -1584,10 +1738,10 @@ def _run_flow_file(args, out_dir: Path) -> None:
             raw = call_with_retry(
                 lambda: provider_edit(
                     provider, prompt, model, refs, ratio, key, client,
-                    background=background, idem_key=idem,
+                    background=background, idem_key=idem, quality=args.quality,
                 ) if refs else provider_generate(
                     provider, prompt, model, ratio, key, client,
-                    background=background, idem_key=idem, seed=args.seed,
+                    background=background, idem_key=idem, seed=args.seed, quality=args.quality,
                 ),
                 max_attempts=provider.max_retries,
                 backoff_floor=provider.backoff_floor,
@@ -1598,7 +1752,7 @@ def _run_flow_file(args, out_dir: Path) -> None:
         image_path.write_bytes(raw)
         if not args.no_metadata:
             _write_metadata(image_path, raw, prompt=prompt, provider=provider.name,
-                            model=model, ratio=ratio, background=background, refs=refs)
+                            model=model, ratio=ratio, background=background, refs=refs, quality=args.quality)
         return flow.NodeOutcome(
             "success", artifacts=[str(image_path)],
             data={"prompt": prompt, "provider": provider.name, "model": model,
@@ -1766,7 +1920,7 @@ def _run_sequence(args, provider: Provider, model: str, key: str,
         if not args.no_metadata:
             _write_metadata(target, raw, prompt=prompt, provider=provider.name,
                             model=model, ratio=args.ratio, background=args.background,
-                            refs=args.ref or [])
+                            refs=args.ref or [], quality=args.quality)
         width, height, _ = probe.image_dims(raw)
         written.append(target)
         json_items.append({"ok": True, "path": str(target), "error": None,
@@ -1869,10 +2023,22 @@ def main() -> None:
     if model not in provider.models:
         print(f"→ warning:  {model!r} not in {provider.name}'s known models "
               f"{sorted(provider.models)} — sending anyway", file=sys.stderr)
+    # Order matters: capability first, then cost. If the tier cannot be honored at
+    # all, say so precisely — running the cost check first would report "price not
+    # measured" for what is really an invalid tier/model pairing. Both run before
+    # the first request, and both are no-ops without --quality.
+    try:
+        _guard_quality(provider, model, args.quality)
+        _guard_run_cost({provider.name: max(1, args.count)}, {provider.name: model},
+                        args.quality, args.yes_costs)
+    except ProviderError as exc:
+        sys.exit(f"error: {exc}")
     print(f"→ model:    {model}", file=sys.stderr)
     print(f"→ ratio:    {args.ratio}", file=sys.stderr)
     if args.background:
         print(f"→ background: {args.background}", file=sys.stderr)
+    if args.quality:
+        print(f"→ quality:  {args.quality}", file=sys.stderr)
     for r in args.ref or []:
         ok = r.startswith(("http://", "https://")) or Path(r).expanduser().is_file()
         if not ok:
@@ -1900,9 +2066,9 @@ def main() -> None:
         idem = new_idempotency_key()
         if args.ref:
             return provider_edit(provider, prompt, model, args.ref, args.ratio, key,
-                                 client, background=args.background, idem_key=idem)
+                                 client, background=args.background, idem_key=idem, quality=args.quality)
         return provider_generate(provider, prompt, model, args.ratio, key, client,
-                                 background=args.background, idem_key=idem, seed=img_seed)
+                                 background=args.background, idem_key=idem, seed=img_seed, quality=args.quality)
 
     json_items: list[dict] = []
     written: list[Path] = []
@@ -1925,7 +2091,7 @@ def main() -> None:
                 # siblings were billed regardless).
                 billed = len(written) + (1 if provider.bills_on_failure else 0)
                 if billed:
-                    print(f"→ spent: {_cost_phrase({provider.name: billed}, {provider.name: model})}",
+                    print(f"→ spent: {_cost_phrase({provider.name: billed}, {provider.name: model}, args.quality)}",
                           file=sys.stderr)
                 if args.json:
                     if count == 1:
@@ -1939,7 +2105,7 @@ def main() -> None:
             if not args.no_metadata:
                 _write_metadata(target, raw, prompt=prompt, provider=provider.name,
                                 model=model, ratio=args.ratio, background=args.background,
-                                refs=args.ref or [])
+                                refs=args.ref or [], quality=args.quality)
             w, h, _fmt = probe.image_dims(raw)
             json_items.append({"ok": True, "path": str(target), "error": None,
                                "width": w, "height": h})
@@ -1949,7 +2115,7 @@ def main() -> None:
         client.close()
 
     # cost summary for the real run (302ai bills each call; others vary)
-    print(f"→ spent: {_cost_phrase({provider.name: count}, {provider.name: model})}",
+    print(f"→ spent: {_cost_phrase({provider.name: count}, {provider.name: model}, args.quality)}",
           file=sys.stderr)
 
     if args.json:

@@ -1,6 +1,6 @@
 [project]
 name = "generate-image"
-version = "2.3.0"
+version = "2.4.0"
 description = "Capability-routed multi-provider image generation with img2img, Seedream sequences, DAG scheduling, and bounded acceptance-loop flows."
 readme = "README.md"
 requires-python = ">=3.10"
