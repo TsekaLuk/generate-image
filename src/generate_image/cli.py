@@ -299,11 +299,13 @@ def _shape_prompt(provider: Provider, prompt: str, ratio: str) -> str:
     """Append a ratio hint only where the aspect is NOT controlled for real.
 
     Real control: `wxh` (WxH), `image_config` (explicit aspect_ratio field),
-    `openai_xl` (a honored `size` enum). The plain `openai` style needs the hint
+    `openai_xl` (a honored `size` enum), `openai_custom` (an exact custom WxH —
+    the aspect already rides in `size`, and saying it a second time in the prompt
+    is what produced the old mismatch). The plain `openai` style needs the hint
     because a relay fronting gpt-image may ignore `size` and reshape to whatever the
     prompt implies; on the official API the hint is a harmless extra steer.
     """
-    if provider.size_style in ("wxh", "image_config", "openai_xl"):
+    if provider.size_style in ("wxh", "image_config", "openai_xl", "openai_custom"):
         return prompt
     hint = RATIO_HINT.get(ratio, "")
     return f"{prompt}。{hint}" if hint else prompt
@@ -372,7 +374,8 @@ def provider_generate(provider: Provider, prompt: str, model: str, ratio: str,
     else:
         body = {"model": model, "prompt": _shape_prompt(provider, prompt, ratio), "n": 1}
     size = ratio_to_size(provider, ratio)
-    if provider.gen_style != "ark" and provider.size_style in ("openai", "openai_xl") and size:
+    if (provider.gen_style != "ark"
+            and provider.size_style in ("openai", "openai_xl", "openai_custom") and size):
         body["size"] = size
     elif provider.size_style == "wxh" and size:
         body["image_size"] = size
@@ -679,6 +682,16 @@ COST_CNY_PER_IMAGE_BY_MODEL: dict[str, float] = {
     "147ai/gpt-image-2-medium": 0.12,
     "147ai/gpt-image-2-client-4K": 0.12,
     "147ai/gpt-image-2-high": 0.2,
+    # 302ai: derived from measured usage.output_tokens x $30/1M (2026-09-14).
+    # NOTE these are all at the relay's DEFAULT quality tier. Measured 2026-09-16,
+    # `quality` is a 36x lever on this provider (1024²: low=196 tok, max=7024 tok),
+    # while _unit_cost() keys only on provider/model and has no quality dimension.
+    # Do not expose a --quality flag until the estimator understands it, or
+    # --dry-run will under-report by an order of magnitude.
+    "302ai/gpt-image-2.5-flare": 0.042,
+    "302ai/gpt-image-2.5-sunburst": 0.042,
+    "302ai/gpt-image-2.5": 0.445,
+    "302ai/gpt-image-2": 0.10,
 }
 
 

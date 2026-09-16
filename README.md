@@ -10,7 +10,7 @@
   <img src="docs/sample-layers.jpg" alt="样例:双层筛网" width="380">
 </p>
 
-> 上面两张是用本 skill 出的扁平矢量插图(`gpt-image-2`, 16:9)。
+> 上面两张是用本 skill 出的扁平矢量插图(`gpt-image-2`, 16:9)。当前默认模型已是 `gpt-image-2.5-flare`。
 
 ---
 
@@ -25,8 +25,8 @@
 
 | Provider | base_url | 出图端点 | 图生图 `--ref` | size 方言 | Key env |
 |---|---|---|---|---|---|
-| **`openai`**(auto 首选) | api.openai.com | `/v1/images/generations` | multipart edits | `size`(1024²/1536×1024/1024×1536,真控) | `OPENAI_API_KEY` |
-| `302ai` | api.302.ai | `/v1/images/generations` | multipart edits | `size` | `AI302_API_KEY` |
+| **`openai`**(auto 首选) | api.openai.com | `/v1/images/generations` | multipart edits | `size` **自定义 WxH 真控**(16 的倍数、1:3~3:1、边 ≤3840) | `OPENAI_API_KEY` |
+| `302ai` | api.302.ai | `/v1/images/generations` | multipart edits | `size` **真认自定义 WxH**(实测 2048²=4.19MP);`quality` 也真认 | `AI302_API_KEY` |
 | `openrouter` | openrouter.ai/api | `/v1/images` | chat image_url | 无(靠 `-r`) | `OPENROUTER_API_KEY` |
 | `siliconflow` | api.siliconflow.cn | `/v1/images/generations` | image_prompt | `image_size` WxH(真控) | `SILICONFLOW_API_KEY` |
 | `volcengine` | ark.cn-beijing.volces.com/api/v3 | `/images/generations` | Ark JSON `image[]`(本地文件自动 Base64) | `size: 2K` + `-r` 提示词 | `ARK_API_KEY` |

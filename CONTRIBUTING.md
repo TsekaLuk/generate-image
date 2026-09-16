@@ -58,9 +58,10 @@
 | `background_unsupported` 非空（mox `gpt-image-2`） | 用 `volcengine`（Seedream 全系硬拒），或 `dataclasses.replace` 合成一个 `GUARDED` provider |
 | `.env` / 环境变量泄漏 | `tests/conftest.py` 的 autouse fixture 已清空所有 provider 变量、stub 掉 `_find_dotenv` 与 `Path.home`；新测试不要再自己写一份局部清理 |
 
-> 机械 `mox` → `openai` 全局替换会把内部网关主机名 `aigw.mox.ktvsky.com` 变成
-> `aigw.openai.ktvsky.com` —— 仍然是内网派生串。替换后**务必**单独 grep 一遍
-> 内网域名，不要只 grep provider 名。
+> 机械 `mox` → `openai` 全局替换有个陷阱：内部网关主机名里也含 provider 名，
+> 替换后会得到一个"看起来像公网、实际仍是内网派生"的字符串（内网域名本身
+> 按本文档开头的红线不在这里写出）。替换后**务必**拿内部版里的真实主机名
+> 单独 grep 一遍，不要只 grep provider 名。
 
 ## 从内部版回移改动到公开版
 

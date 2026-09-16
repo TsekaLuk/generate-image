@@ -317,7 +317,7 @@ def test_count_mid_sequence_failure_reports_spent(tmp_path, monkeypatch, capsys)
     err = capsys.readouterr().err
     # 302ai bills success AND failure -> 1 written + 1 failed = 2 billed calls surfaced
     # (the '→ spent:' line prints BEFORE the abort, so already-billed cost isn't hidden)
-    assert "→ spent:" in err and "¥0.20" in err and "2 billed call" in err
+    assert "→ spent:" in err and _yen(2) in err and "2 billed call" in err
     assert (out / "pic_1.png").exists()
 
 
@@ -331,7 +331,7 @@ def test_count_dry_run_reflects_n(tmp_path, monkeypatch, capsys):
     assert "4" in cap.err and "billed call" in cap.err
     obj = json.loads(cap.out.strip())
     assert obj["images"] == 4
-    assert obj["estimated_cost_cny"] == 0.4
+    assert obj["estimated_cost_cny"] == pytest.approx(_UNIT_302AI * 4)
 
 
 # --- (C) progress -------------------------------------------------------------
@@ -505,6 +505,18 @@ def test_env_output_dir(tmp_path, monkeypatch):
     assert (dest / "p.png").exists()
 
 
+# These assertions are about the "spent" line being printed and reflecting the
+# billed-call count — not about one hardcoded price. Derive the unit price from the
+# registry so bumping 302ai's default model (or its per-model price) doesn't make
+# them fail for an unrelated reason.
+from generate_image.providers import PROVIDERS as _P
+_UNIT_302AI = generate._unit_cost("302ai", _P["302ai"].default_model)
+
+
+def _yen(n):
+    return f"\u00a5{_UNIT_302AI * n:.2f}"
+
+
 # --- (F) cost summary ---------------------------------------------------------
 
 def test_cost_summary_single_302ai(tmp_path, monkeypatch, capsys):
@@ -515,7 +527,7 @@ def test_cost_summary_single_302ai(tmp_path, monkeypatch, capsys):
     assert _run_main() == 0
     err = capsys.readouterr().err
     assert "→ spent:" in err
-    assert "¥0.10" in err and "1 billed call" in err
+    assert _yen(1) in err and "1 billed call" in err
 
 
 def test_cost_summary_count(tmp_path, monkeypatch, capsys):
@@ -527,7 +539,7 @@ def test_cost_summary_count(tmp_path, monkeypatch, capsys):
     ])
     assert _run_main() == 0
     err = capsys.readouterr().err
-    assert "→ spent:" in err and "¥0.30" in err and "3 billed call" in err
+    assert "→ spent:" in err and _yen(3) in err and "3 billed call" in err
 
 
 def test_cost_summary_varies_for_openrouter(tmp_path, monkeypatch, capsys):
@@ -552,7 +564,7 @@ def test_cost_summary_batch_302ai(tmp_path, monkeypatch, capsys):
     ])
     assert _run_main() == 0
     err = capsys.readouterr().err
-    assert "→ spent:" in err and "¥0.20" in err and "2 billed call" in err
+    assert "→ spent:" in err and _yen(2) in err and "2 billed call" in err
 
 
 def test_dry_run_cost_uses_shared_map_for_varies(tmp_path, monkeypatch, capsys):

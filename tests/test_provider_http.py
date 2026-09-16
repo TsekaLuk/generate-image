@@ -11,6 +11,7 @@ response for each provider's generation and edit paths, asserting:
 from __future__ import annotations
 
 import base64
+import dataclasses
 import json
 from pathlib import Path
 
@@ -38,7 +39,7 @@ def _body(req) -> dict:
 
 # --- generation: endpoint + size dialect --------------------------------------
 
-def test_openai_generate_uses_openai_size_and_ratio_hint():
+def _capture_openai_generate(provider, ratio, model):
     seen = {}
 
     def handler(req):
@@ -46,13 +47,36 @@ def test_openai_generate_uses_openai_size_and_ratio_hint():
         seen["body"] = _body(req)
         return httpx.Response(200, json={"data": [{"b64_json": _B64}]})
 
-    p = PROVIDERS["openai"]
     with _client(handler) as c:
-        out = generate.provider_generate(p, "一只猫", "gpt-image-2", "16:9", "k", c)
+        seen["out"] = generate.provider_generate(provider, "一只猫", model, ratio, "k", c)
+    return seen
 
-    assert out == _TINY_PNG
+
+def test_openai_generate_sends_exact_aspect_size_and_no_ratio_hint():
+    # The aspect rides in `size` now, so the prompt stays clean — saying it in both
+    # places is what produced the old mismatch.
+    seen = _capture_openai_generate(PROVIDERS["openai"], "16:9", "gpt-image-2.5-flare")
+    assert seen["out"] == _TINY_PNG
     assert seen["path"] == "/v1/images/generations"
-    assert seen["body"]["size"] == "1536x1024"          # openai WxH
+    assert seen["body"]["size"] == "1680x944"
+    assert seen["body"]["prompt"] == "一只猫"
+    assert "16:9" not in seen["body"]["prompt"]
+
+
+def test_ultrawide_reaches_the_api_as_ultrawide():
+    # The regression this change exists for: -r 21:9 used to go out as 1536x1024
+    # (1.50), nowhere near the 2.33 the caller asked for.
+    seen = _capture_openai_generate(PROVIDERS["openai"], "21:9", "gpt-image-2.5-flare")
+    w, h = (int(v) for v in seen["body"]["size"].split("x"))
+    assert abs((w / h) - (21 / 9)) / (21 / 9) < 0.01
+
+
+def test_openai_enum_style_still_sends_the_ratio_hint():
+    # A relay swapped in via OPENAI_BASE_URL that ignores `size` keeps the old
+    # behaviour: 3-value enum plus a prompt hint carrying the aspect.
+    p = dataclasses.replace(PROVIDERS["openai"], size_style="openai")
+    seen = _capture_openai_generate(p, "16:9", "gpt-image-2")
+    assert seen["body"]["size"] == "1536x1024"
     assert "16:9" in seen["body"]["prompt"] or "landscape" in seen["body"]["prompt"]
 
 

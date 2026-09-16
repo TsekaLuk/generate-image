@@ -7,6 +7,7 @@ resolution, and the aspect-ratio -> size mapping per size dialect.
 from __future__ import annotations
 
 import base64
+import dataclasses
 
 import pytest
 
@@ -140,10 +141,51 @@ def test_resolve_does_not_mutate_the_registry(monkeypatch):
 
 
 def test_ratio_to_size_openai_style():
-    p = PROVIDERS["openai"]  # size_style == "openai"
+    # No registered provider uses the plain 3-value enum any more (both gpt-image
+    # backends honor a custom WxH), but the style stays supported for a relay
+    # swapped in via OPENAI_BASE_URL that ignores `size`. Cover it with a synthetic
+    # provider rather than dropping the branch.
+    p = dataclasses.replace(PROVIDERS["openai"], size_style="openai")
     assert ratio_to_size(p, "1:1") == "1024x1024"
     assert ratio_to_size(p, "16:9") == "1536x1024"
     assert ratio_to_size(p, "9:16") == "1024x1536"
+
+
+def test_ratio_to_size_openai_custom_style_is_aspect_exact():
+    # The registered gpt-image providers honor a custom WxH, so they get the
+    # exact-aspect table instead of the 3-value enum that mapped 7 of 10 ratios
+    # onto a wrong shape.
+    for name in ("openai", "302ai"):
+        p = PROVIDERS[name]
+        assert p.size_style == "openai_custom", name
+        # ratios the old enum already got right stay byte-identical
+        assert ratio_to_size(p, "1:1") == "1024x1024"
+        assert ratio_to_size(p, "3:2") == "1536x1024"
+        assert ratio_to_size(p, "2:3") == "1024x1536"
+        # the seven that were wrong now land on the requested aspect
+        assert ratio_to_size(p, "16:9") == "1680x944"
+        assert ratio_to_size(p, "21:9") == "1904x816"
+        assert ratio_to_size(p, "9:16") == "944x1680"
+
+
+def test_openai_custom_sizes_obey_the_published_gpt_image_contract():
+    """Every custom size must satisfy OpenAI's documented constraints, else the
+    API rejects it: multiples of 16, aspect 1:3..3:1, edges <= 3840, total pixels
+    655,360..8,294,400 — and must match the ratio it claims to encode."""
+    for ratio, size in providers.OPENAI_CUSTOM_RATIO_SIZE.items():
+        w, h = (int(v) for v in size.split("x"))
+        assert w % 16 == 0 and h % 16 == 0, f"{ratio}={size} not a multiple of 16"
+        assert 1 / 3 <= w / h <= 3, f"{ratio}={size} outside the 1:3..3:1 window"
+        assert max(w, h) <= 3840, f"{ratio}={size} exceeds the 3840 edge cap"
+        assert 655_360 <= w * h <= 8_294_400, f"{ratio}={size} outside the pixel window"
+        a, b = (int(v) for v in ratio.split(":"))
+        assert abs((w / h) - (a / b)) / (a / b) < 0.01, (
+            f"{ratio}={size} is {w / h:.3f}, more than 1% off the requested {a / b:.3f}"
+        )
+
+
+def test_every_ratio_the_cli_accepts_has_a_custom_size():
+    assert cli.VALID_RATIOS <= set(providers.OPENAI_CUSTOM_RATIO_SIZE)
 
 
 def test_ratio_to_size_wxh_style_uses_siliconflow_set():

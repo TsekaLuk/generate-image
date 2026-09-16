@@ -18,6 +18,15 @@ import pytest
 
 import generate_image
 from generate_image import cli as generate
+from generate_image.providers import PROVIDERS
+
+# These assertions are about "the sidecar records the model that was actually
+# routed to", not about which model 302ai defaults to — pin to the registry so a
+# default-model bump (e.g. gpt-image-2 -> gpt-image-2.5-flare) doesn't fail here.
+ROUTED_DEFAULT_MODEL = PROVIDERS["302ai"].default_model
+# Same reasoning for the ¥ figures: the point is that a cost line is produced at
+# all, not that it equals one frozen number.
+ROUTED_UNIT_COST = generate._unit_cost("302ai", ROUTED_DEFAULT_MODEL)
 
 # A real 1x1 PNG so probe.image_dims() decodes width/height = 1/1.
 _TINY_PNG = base64.b64decode(
@@ -73,7 +82,7 @@ def test_dry_run_single_no_call_no_key(tmp_path, monkeypatch, capsys):
     assert "302ai" in err
     assert "9:16" in err
     assert "billed call" in err
-    assert "≈" in err and "¥0.1" in err
+    assert "≈" in err and f"¥{ROUTED_UNIT_COST:.2f}" in err
     assert "→ spent:" not in err  # dry-run spends nothing (plan shows '→ cost:' only)
 
 
@@ -124,7 +133,7 @@ def test_metadata_single(tmp_path, monkeypatch):
     meta = json.loads((out / "pic.json").read_text(encoding="utf-8"))
     assert meta["prompt"] == "日落"          # original prompt, not the ratio-hinted one
     assert meta["provider"] == "openai"
-    assert meta["model"] == "gpt-image-2"
+    assert meta["model"] == ROUTED_DEFAULT_MODEL
     assert meta["ratio"] == "9:16"
     assert meta["width"] == 1 and meta["height"] == 1
     assert meta["refs"] == []
@@ -169,7 +178,7 @@ def test_metadata_dag(tmp_path, monkeypatch):
     assert m["prompt"] == "root"
     assert m["ratio"] == "1:1"
     assert m["provider"] == "openai"
-    assert m["model"] == "gpt-image-2"
+    assert m["model"] == ROUTED_DEFAULT_MODEL
     assert m["width"] == 1 and m["height"] == 1
 
 
@@ -187,7 +196,7 @@ def test_json_single_success(tmp_path, monkeypatch, capsys):
     assert obj["ok"] is True
     assert obj["path"].endswith("pic.png")
     assert obj["provider"] == "openai"
-    assert obj["model"] == "gpt-image-2"
+    assert obj["model"] == ROUTED_DEFAULT_MODEL
     assert obj["ratio"] == "1:1"
     assert obj["width"] == 1 and obj["height"] == 1
     # human banner stays on stderr; stdout is ONLY the json (plain path suppressed)
@@ -271,7 +280,7 @@ def test_dry_run_json_emits_plan_to_stdout(tmp_path, monkeypatch, capsys):
     assert obj["provider"] == "302ai"
     assert obj["ratio"] == "1:1"
     assert obj["images"] == 1
-    assert obj["estimated_cost_cny"] == 0.1
+    assert obj["estimated_cost_cny"] == ROUTED_UNIT_COST
     assert cap.out.strip().startswith("{")       # clean JSON, banner stays on stderr
 
 

@@ -32,7 +32,9 @@ VALID_GEN_STYLES = frozenset({"openai", "ark", "chat_image_config"})
 VALID_EDIT_STYLES = frozenset({
     "multipart", "chat_image", "image_prompt", "ark_json", "chat_image_config",
 })
-VALID_SIZE_STYLES = frozenset({"openai", "wxh", "ark", "image_config", "openai_xl"})
+VALID_SIZE_STYLES = frozenset({
+    "openai", "openai_custom", "wxh", "ark", "image_config", "openai_xl",
+})
 AUTO_PROVIDER = "auto"
 
 
@@ -94,6 +96,37 @@ OPENAI_RATIO_SIZE = {
     "4:3": "1536x1024", "5:4": "1536x1024",
     "9:16": "1024x1536", "2:3": "1024x1536", "3:4": "1024x1536", "4:5": "1024x1536",
 }
+# Exact-aspect sizes for the gpt-image `size` contract as published by OpenAI
+# (2026-09): width and height are multiples of 16, aspect between 1:3 and 3:1,
+# neither edge over 3840, total pixels 655,360..8,294,400. `gpt-image-2.5-flare`
+# and `-sunburst` accept arbitrary WIDTHxHEIGHT inside that window rather than
+# only the three canonical values.
+#
+# WHY THIS EXISTS: OPENAI_RATIO_SIZE collapses 10 aspect ratios onto 3 sizes, so
+# every provider that actually honors `size` received 7 of 10 ratios as the WRONG
+# ASPECT — `-r 21:9` went out as 1536x1024 (1.50, not 2.33), `-r 4:3` as 1.50
+# (not 1.33), `-r 9:16` as 0.67 (not 0.56). Verified end to end against 302ai
+# 2026-09-16: a custom size comes back verbatim (`1792x768` -> 1792x768,
+# `2048x2048` -> 2048x2048), and `-r 21:9` now yields 1904x816 (2.333, 0.00% off).
+#
+# The AREA is deliberately held at ~1.57 MP, the same budget OPENAI_RATIO_SIZE
+# already used (1536x1024 = 1,572,864 px): the defect being fixed is the ASPECT,
+# not the image being small. Raising the ceiling is a separate, cost-bearing call
+# (302ai reaches 4.19 MP at 2048², measured). Entries whose aspect was ALREADY
+# correct (1:1, 3:2, 2:3) are kept byte-identical so nothing relying on them moves.
+OPENAI_CUSTOM_RATIO_SIZE = {
+    "1:1": "1024x1024",      # unchanged (aspect was already exact)
+    "3:2": "1536x1024",      # unchanged
+    "2:3": "1024x1536",      # unchanged
+    "16:9": "1680x944",      # was 1536x1024 (1.50) -> now 1.780, target 1.778
+    "9:16": "944x1680",      # was 1024x1536 (0.67) -> now 0.562, target 0.563
+    "21:9": "1904x816",      # was 1536x1024 (1.50) -> now 2.333, target 2.333
+    "4:3": "1456x1088",      # was 1536x1024 (1.50) -> now 1.338, target 1.333
+    "3:4": "1088x1456",      # was 1024x1536 (0.67) -> now 0.747, target 0.750
+    "5:4": "1408x1120",      # was 1536x1024 (1.50) -> now 1.257, target 1.250
+    "4:5": "1136x1424",      # was 1024x1536 (0.67) -> now 0.798, target 0.800
+}
+
 # Google `image_config.image_size` tiers (147ai). Unlike every other provider here
 # this is a resolution TIER, not a WxH string, and it is honored for real — so this
 # is the one route to true 4K in this skill (the OpenAI `size` enum tops out at
@@ -133,9 +166,20 @@ PROVIDERS: dict[str, Provider] = {
         gen_style="openai",
         edit_path="/v1/images/edits",
         edit_style="multipart",
-        size_style="openai",
-        default_model="gpt-image-2",
-        models=frozenset({"gpt-image-2", "gpt-image-1"}),
+        # The published gpt-image `size` contract accepts an arbitrary WIDTHxHEIGHT
+        # (see OPENAI_CUSTOM_RATIO_SIZE), not just the three canonical values, so
+        # the aspect the caller asked for can travel in `size` instead of being
+        # rounded to the nearest of three shapes.
+        size_style="openai_custom",
+        # OpenAI shipped GPT Image 2.5 on 2026-09-08 as two ids: `-flare` (faster,
+        # the recommended default) and `-sunburst` (editing precision, slower).
+        # Both add two quality tiers above the old ceiling — `xhigh` and `max` —
+        # which this CLI does not send; see SKILL.md's parameter matrix for why.
+        default_model="gpt-image-2.5-flare",
+        models=frozenset({
+            "gpt-image-2.5-flare", "gpt-image-2.5-sunburst",
+            "gpt-image-2", "gpt-image-1",
+        }),
         background_unsupported=frozenset(),  # official API supports background=transparent
         bills_on_failure=False,  # official API does not bill failed requests
         supports_idempotency=False,
@@ -153,9 +197,23 @@ PROVIDERS: dict[str, Provider] = {
         gen_style="openai",
         edit_path="/v1/images/edits",
         edit_style="multipart",
-        size_style="openai",
-        default_model="gpt-image-2",
+        # Measured 2026-09-16: this relay honors a custom `size` verbatim
+        # (1792x768 and 2048x2048 both came back exactly as asked) and has no
+        # ~1.57 MP ceiling — 2048² = 4.19 MP was returned intact.
+        size_style="openai_custom",
+        # Measured 2026-09-14 (same prompt, 1024², usage-token billing):
+        #   gpt-image-2.5-flare     74.3s  196 out-tok  <- default, fastest at its price
+        #   gpt-image-2.5-sunburst  91.0s  196 out-tok
+        #   gpt-image-2             56.0s  (faster, but pricier per image)
+        #   gpt-image-2.5           86.4s 2058 out-tok  (~10x dearer, no quality gain)
+        # All of the above are at the relay's DEFAULT quality tier. Measured
+        # 2026-09-16, `quality` swings output tokens 36x on this provider
+        # (low=196, max=7024) — and the cost table below has no quality dimension,
+        # which is exactly why no --quality flag is exposed yet.
+        default_model="gpt-image-2.5-flare",
         models=frozenset({
+            "gpt-image-2.5-flare", "gpt-image-2.5-sunburst",
+            "gpt-image-2.5", "gpt-image-2.5-dev",
             "gpt-image-2", "gpt-image-1",
             "flux-kontext-pro", "flux-kontext-max",
         }),
@@ -434,6 +492,8 @@ def ratio_to_size(provider: Provider, ratio: str) -> str | None:
     takes no size parameter (aspect is steered by a prompt hint instead)."""
     if provider.size_style == "openai":
         return OPENAI_RATIO_SIZE.get(ratio, "1024x1024")
+    if provider.size_style == "openai_custom":
+        return OPENAI_CUSTOM_RATIO_SIZE.get(ratio, "1024x1024")
     if provider.size_style == "wxh":
         return SILICONFLOW_RATIO_SIZE.get(ratio, "1328x1328")
     if provider.size_style == "ark":

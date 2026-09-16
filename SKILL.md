@@ -18,8 +18,8 @@ requirements. Use `-p` to force a provider. Run
 
 | Provider | 出图端点 | img2img (`--ref`) | size 方言 | Key env |
 |---|---|---|---|---|
-| **`openai`** (auto first) | `/v1/images/generations` | ✅ multipart edits | `size`(1024²/1536×1024/1024×1536,真控) | `OPENAI_API_KEY` |
-| `302ai` | `/v1/images/generations` | ✅ multipart edits | `size` | `AI302_API_KEY` |
+| **`openai`** (auto first) | `/v1/images/generations` | ✅ multipart edits | `size` **自定义 WxH 真控**(16 的倍数、1:3~3:1、边 ≤3840) | `OPENAI_API_KEY` |
+| `302ai` | `/v1/images/generations` | ✅ multipart edits | `size` **真认自定义 WxH**(实测 2048²=4.19MP);`quality` 也真认 | `AI302_API_KEY` |
 | `openrouter` | `/v1/images` | ✅ chat image_url | 无(靠 `-r` 提示词) | `OPENROUTER_API_KEY` |
 | `siliconflow` | `/v1/images/generations` | ✅ image_prompt | `image_size` WxH(真控) | `SILICONFLOW_API_KEY` |
 | `volcengine` | `/api/v3/images/generations` | ✅ Ark JSON `image[]` (local refs → Base64) | `size: 2K` + `-r` hint | `ARK_API_KEY` |
@@ -80,6 +80,74 @@ large run because pricing and activation are account-specific.
   (official gpt-image models do) and **hard-refused client-side** on models known
   not to (the whole Seedream line). For matting/抠图 on those, use a chroma-key
   background in the prompt + local key-out instead.
+
+## 参数支持矩阵
+
+`gpt-image-2.5`(2026-09-08 发布,两个 id:`-flare` 快、默认;`-sunburst` 编辑精度
+优先、更慢)的官方参数契约比本 skill 目前发出去的**大得多**。下面逐条标注
+"官方允许什么 / 我们发不发 / 实测怎么反应"。**没实测的一律写"未测",
+不写"理论上支持"。**
+
+### 我们实际发出去的字段
+
+`model`、`prompt`、`n=1`、`size`、`background?`、`seed?`。
+
+**`quality` / `input_fidelity` / `output_compression` / `moderation` 这四个字段,
+代码里一次都没出现过** —— 也就是每次调用都跑在服务端的 `auto` 档上。
+
+### 矩阵
+
+| 参数 | 官方契约(2.5) | 我们发吗 | 实测 |
+|---|---|---|---|
+| `size` | 自定义 WxH:16 的倍数、比例 1:3~3:1、单边 ≤3840、总像素 655,360~8,294,400 | ✅ 发精确比例值 | 302ai 实测原样返回(`1792x768`、`2048x2048`) |
+| `quality` | `low`/`medium`/`high`/**`xhigh`**/**`max`**/`auto`(后两档 2.5 新增) | ❌ 从不发 | ⚠️ **36 倍成本杠杆**,见下 |
+| `background` | `transparent`/`opaque`/`auto` | ✅ 发 | 官方 API 支持 |
+| `input_fidelity` | `high`/`low`,**仅 edits**,控制对参考图(尤其人脸)的还原力度 | ❌ 从不发 | 发给 generations 不报错但行为不稳(302ai 上那次返回尺寸与请求不符);**别用在 generations 上;edits 路径未测** |
+| `output_format` | `png`/`jpeg`/`webp` | ❌ 从不发(默认 png) | 未测 |
+| `output_compression` | 0-100,仅 jpeg/webp | ❌ 从不发 | 未测 |
+| `moderation` | `auto`/`low` | ❌ 从不发 | 未测 |
+| `n` | 1-10 | ✅ 恒为 1(多图走 `--count`) | — |
+
+### ⚠️ `quality` 是 36 倍的成本杠杆,而报价器不知道它存在
+
+302ai 上同一提示词、同样 1024²、只改 `quality`(2026-09-16 实测):
+
+| quality | output_tokens | 折合 ¥ | 耗时 |
+|---|---|---|---|
+| `low` | 196 | ≈¥0.042 | 57.5s |
+| `max` | **7024** | **≈¥1.5** | 108.2s |
+
+`cli._unit_cost()` 只按 `provider/model` 查表,**没有 quality 这一维**。
+所以**现在不暴露 `--quality` 是有意的**:在一个失败也计费 + 自动重试 +
+批量 DAG 的工具里,先有 36x 放大器再有护栏,一个 `--batch-file` 配 `max` 就是事故。
+要加这个开关,必须同时改成本预估、`--dry-run` 报价和批量模式的上限。
+
+### 已修:`-r` 曾被三值枚举压成错误画幅
+
+`OPENAI_RATIO_SIZE` 把 10 个比例塞进 3 个固定尺寸,于是在**真认 `size`** 的
+provider 上,10 个比例里有 7 个是以**错误画幅**到达服务端的:
+
+| ratio | 旧的实发比例 | 想要的比例 | 现在发的 |
+|---|---|---|---|
+| 16:9 | 1.50 | 1.78 | `1680x944` |
+| 21:9 | 1.50 | 2.33 | `1904x816` |
+| 4:3 | 1.50 | 1.33 | `1456x1088` |
+| 5:4 | 1.50 | 1.25 | `1408x1120` |
+| 9:16 | 0.67 | 0.56 | `944x1680` |
+| 3:4 | 0.67 | 0.75 | `1088x1456` |
+| 4:5 | 0.67 | 0.80 | `1136x1424` |
+
+现在走 `OPENAI_CUSTOM_RATIO_SIZE` 精确比例表(`size_style="openai_custom"`)。
+端到端实测 `-r 21:9` 出 **1904x816(比例 2.333,误差 0.00%)**。
+
+- **像素预算刻意不变**(仍约 1.57MP):这个 bug 是"比例错",不是"图太小"。
+  把所有人的出图连同成本一起放大是另一个需要单独决定的事
+  (302ai 实测能到 2048²=4.19MP)。
+- **比例本来就对的 `1:1` / `3:2` / `2:3` 保持字节不变**,依赖它们的调用不受影响。
+- 改为精确尺寸后**不再注入 `-r` 提示词钩子** —— 比例已由 `size` 承载,
+  再在提示词里说一遍正是当初产生矛盾的原因。
+- `--ref` 图生图路径**未改**:edits 端点是否认 size 未实测,且参考图的比例本来
+  就会压过 `-r`(见 Common mistakes)。
 
 ## When to use
 
