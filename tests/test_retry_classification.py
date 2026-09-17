@@ -122,3 +122,36 @@ def test_147ai_declares_the_measured_throttle_settings():
     assert p.backoff_floor >= 20.0
     assert p.default_concurrency == 1  # back-to-back requests get cut
     assert p.rpm <= 12
+
+
+# --- a throttle wearing a permanent-looking status code -------------------------
+
+def test_403_is_not_retryable_by_default():
+    # For everyone else 403 still means "you may not do this", full stop.
+    assert not is_retryable_status(403, bills_on_failure=True, supports_idempotency=False)
+
+
+def test_listed_throttle_status_becomes_retryable():
+    """sensenova answers a too-fast call with 403 'model is not available in the
+    current token plan' and then serves the same request fine after a cooldown
+    (measured: 403 in ~2s, HTTP 200 twenty seconds later). Classifying that as
+    permanent would turn a throttle into a hard failure."""
+    assert is_retryable_status(403, bills_on_failure=True, supports_idempotency=False,
+                               throttle_statuses=frozenset({403}))
+
+
+def test_throttle_list_does_not_leak_to_other_4xx():
+    # Listing 403 must not soften 400/401/404 — those really are permanent.
+    for status in (400, 401, 404, 422):
+        assert not is_retryable_status(
+            status, bills_on_failure=True, supports_idempotency=False,
+            throttle_statuses=frozenset({403}))
+
+
+def test_only_sensenova_declares_a_throttle_status():
+    """Guard against the escape hatch spreading. Any provider added here needs the
+    same evidence: a status observed to clear on its own."""
+    from generate_image.providers import PROVIDERS
+    declared = {n for n, p in PROVIDERS.items() if p.throttle_statuses}
+    assert declared == {"sensenova"}, declared
+    assert PROVIDERS["sensenova"].throttle_statuses == frozenset({403})

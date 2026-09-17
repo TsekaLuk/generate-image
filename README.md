@@ -31,6 +31,7 @@
 | `siliconflow` | api.siliconflow.cn | `/v1/images/generations` | image_prompt | `image_size` WxH(真控) | `SILICONFLOW_API_KEY` |
 | `volcengine` | ark.cn-beijing.volces.com/api/v3 | `/images/generations` | Ark JSON `image[]`(本地文件自动 Base64) | `size: 2K` + `-r` 提示词 | `ARK_API_KEY` |
 | `147ai` | nn.147ai.com | 双方言,随模型切换 | 两条线都支持 | **真控**,pro 模型可到 4K | `AI147_API_KEY` |
+| `sensenova` | token.sensenova.cn | `/v1/images/generations` | JSON `images[{image_url}]`(≤5 张) | `size` 自定义 WxH(32 的倍数),约 4.2MP | `SENSENOVA_API_KEY` |
 
 `base_url` / 默认模型可用 env 覆盖(`OPENAI_BASE_URL`、`OPENROUTER_DEFAULT_MODEL`…),
 不改代码就能接入其它 OpenAI 兼容 provider。

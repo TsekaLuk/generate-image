@@ -113,3 +113,30 @@ def test_success_returns_image_bytes():
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+def test_model_404_tells_the_user_how_to_recover():
+    """Model availability varies per account (measured on sensenova: the same
+    model 200s on one key and 404s on another, and /v1/models does not list them
+    all). A bare "model is not found" gives the user nowhere to go."""
+    def handler(req):
+        return httpx.Response(404, json={"error": {"message": "model is not found",
+                                                   "type": "not_found_error"}})
+    p = PROVIDERS["sensenova"]
+    with httpx.Client(transport=httpx.MockTransport(handler)) as c:
+        with pytest.raises(ProviderError) as e:
+            generate.provider_generate(p, "x", "sensenova-u1-fast", "1:1", "k", c)
+    msg = str(e.value)
+    assert "SENSENOVA_DEFAULT_MODEL" in msg
+    assert "generate-image-models" in msg
+    assert not e.value.retryable, "404 is not a throttle; do not retry it"
+
+
+def test_unrelated_404_gets_no_model_hint():
+    def handler(req):
+        return httpx.Response(404, json={"error": {"message": "endpoint missing"}})
+    p = PROVIDERS["sensenova"]
+    with httpx.Client(transport=httpx.MockTransport(handler)) as c:
+        with pytest.raises(ProviderError) as e:
+            generate.provider_generate(p, "x", "sensenova-u1-pro", "1:1", "k", c)
+    assert "DEFAULT_MODEL" not in str(e.value)

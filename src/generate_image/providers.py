@@ -31,9 +31,11 @@ from dataclasses import dataclass
 VALID_GEN_STYLES = frozenset({"openai", "ark", "chat_image_config"})
 VALID_EDIT_STYLES = frozenset({
     "multipart", "chat_image", "image_prompt", "ark_json", "chat_image_config",
+    "sensenova_json",
 })
 VALID_SIZE_STYLES = frozenset({
     "openai", "openai_custom", "wxh", "ark", "image_config", "openai_xl",
+    "sensenova",
 })
 AUTO_PROVIDER = "auto"
 
@@ -66,6 +68,10 @@ class Provider:
     # in the MODEL NAME (gpt-image-2-low/-medium/-high), so a `quality` field would
     # fight the model id.
     supports_quality: bool = False
+    # Statuses this gateway uses for a TRANSIENT throttle even though the code
+    # normally means something permanent. Retry treats these as retryable. Only add
+    # one after observing it clear on its own — see reliability.is_retryable_status.
+    throttle_statuses: frozenset[int] = frozenset()
     # Re-issue a request whose CONNECTION broke mid-flight (SSL EOF / reset), even
     # when bills_on_failure and there is no idempotency key. Set this only where the
     # failure is known to be billed anyway, so not retrying costs the same and just
@@ -166,6 +172,40 @@ OPENAI_XL_RATIO_SIZE = {
     "4:3": "1536x1024", "3:4": "1024x1536",
     "5:4": "2048x1152", "4:5": "1152x2048",
 }
+# SenseNova `size`. Per the vendor API doc (effective 2026-09-15), u1-pro and
+# u1.5-lite take an ARBITRARY WIDTHxHEIGHT, not a fixed enum:
+#   * width and height must be multiples of 32
+#   * u1-pro   : 512..8192 per edge, aspect at most 5:1 / 1:5 (8K is experimental)
+#   * u1.5-lite: 512..4096 per edge, aspect at most 3:1 / 1:3
+#   * "auto" lets the server choose
+# The values below sit at the doc's suggested 2K tier (~4.2 MP) and satisfy the
+# TIGHTER of the two models' limits, so one table is valid for both.
+# 1:1 / 16:9 / 9:16 / 3:2 / 2:3 are exactly the sizes the doc recommends; the rest
+# are computed to the same budget because the doc lists no value for them.
+#
+# ⚠️ An earlier version of this table was a FIXED enum scraped from a 400 response:
+#   "field Size invalid, should be one of: 1664x2496, 2496x1664, 1760x2368, ...".
+# That enum is real but belongs to `sensenova-u1-fast`, a DIFFERENT model that is
+# not in this doc — it was simply the only model the first API key could call.
+# Do not reintroduce it for u1-pro / u1.5-lite; those accept the custom sizes here
+# (verified: 2752x1536 came back verbatim from u1-pro, and 2752/32 = 86).
+SENSENOVA_RATIO_SIZE = {
+    "1:1": "2048x2048",      # doc-recommended 2K
+    "16:9": "2720x1536",     # doc-recommended
+    "9:16": "1536x2720",     # doc-recommended
+    "3:2": "2496x1664",      # doc-recommended
+    "2:3": "1664x2496",      # doc-recommended
+    "4:3": "2336x1760",      # computed, 1.327 vs 1.333 (0.45%)
+    "3:4": "1792x2400",      # computed, 0.747 vs 0.750 (0.44%)
+    "21:9": "3136x1344",     # computed, 2.333 exact
+    "4:5": "1824x2272",      # computed, 0.803 vs 0.800 (0.35%)
+    "5:4": "2272x1824",      # computed, 1.246 vs 1.250 (0.35%)
+}
+# Edge/step rules above, kept next to the table so a future edit can be checked.
+SENSENOVA_SIZE_STEP = 32
+SENSENOVA_SIZE_MIN = 512
+SENSENOVA_SIZE_MAX = 4096        # the tighter (u1.5-lite) cap; u1-pro allows 8192
+
 # SiliconFlow `image_size` param (WxH) — REQUIRED and actually honored. Values must
 # come from SiliconFlow's supported set; these are the closest match per ratio.
 SILICONFLOW_RATIO_SIZE = {
@@ -361,6 +401,94 @@ PROVIDERS: dict[str, Provider] = {
         max_ref_images=8,  # chat image_url parts; actual ceiling varies by model
         supports_seed=False,  # image_config exposes no seed field
     ),
+    "sensenova": Provider(
+        name="sensenova",
+        # 2026-09-17 实测（真实调用，非文档抄写）：
+        #   * base_url + Bearer 鉴权确认可用（GET /v1/models 回 200；
+        #     api.sensenova.cn 是 404 "no Route matched"，只有 token. 这个 host 对）。
+        #   * /v1/images/generations 走标准 OpenAI 形态，model+prompt+n=1+size 可用。
+        #   * 返回体只有 `url`，没有 b64_json —— extract_image_bytes 会去拉取。
+        #   * 不发 size 时服务端默认给 2752x1536（即 16:9 那一档）。
+        #   * 分辨率约 4.2MP，是本注册表里的高分辨率档（比本注册表其他 provider 都高）。
+        base_url="https://token.sensenova.cn",
+        key_env="SENSENOVA_API_KEY",
+        gen_path="/v1/images/generations",
+        gen_style="openai",
+        # 图生图：JSON 方言，不是 multipart。请求体形如
+        #   {"model": ..., "prompt": ..., "images": [{"image_url": "<公网URL 或
+        #    data:image/png;base64,...>"}], "n": 1, "size": ..., ...}
+        # 关键点（官方文档，2026-09-15 生效）：字段是复数 `images`，数组里是
+        # **对象**且键名是 `image_url`，至多 5 张，第 1 张为主编辑图；
+        # image_url 只收公网 http/https 链接或带 `data:image/*;base64,` 前缀的
+        # Data URL，**纯裸 base64 不支持**。
+        # 历史教训：本 provider 曾被标为"不支持图生图"，因为黑盒试了 11 种形态全败。
+        # 事后对照文档才发现两个维度各错一半 —— 试过 images=[裸字符串]、也试过
+        # image=[{url:...}]，唯独没试到 images=[{image_url:...}] 这个组合。而网关
+        # 对所有错误形态都回同一句 "invalid images, should contain between 1 and 5
+        # items"（那只是"一张图都没解析到"的默认提示，连不含 image 字段的请求也报
+        # 它），所以报错本身对定位字段名零信息量。
+        edit_path="/v1/images/edits",
+        edit_style="sensenova_json",
+        # `size` 是**真生效的固定枚举**，不是自定义 WxH：非法值直接 400，而那条
+        # 400 本身就把合法集合列全了（见 SENSENOVA_RATIO_SIZE 上方注释）。
+        size_style="sensenova",
+        # ⚠️ **模型可用性按账号变化** —— 别把 default_model 当成"一定能用"。
+        # 两把不同的 SenseNova key 实测对比（2026-09-17，同一 base_url）：
+        #
+        #   模型                  key A                key B
+        #   sensenova-u1-pro      间歇 403 限流         ✅ 200  74s 1856x1856 (3.44MP)
+        #   sensenova-u1-fast     ✅ 200 7–14s          ❌ 404 model is not found
+        #   sensenova-u1.5-lite   ✅ 200 ~143s          ✅ 200 138s 2048x2048 (4.19MP)
+        #   /v1/models 目录        8 个模型              只有 2 个
+        #
+        # 没有哪个模型在两把 key 上都稳，所以这里选不出"永远安全"的默认值。取
+        # u1-pro：厂商公告主推的正式版，且在当前配置的 key 上实测可用。
+        # **换 key 后若默认模型 404，不用改代码** —— 设
+        # SENSENOVA_DEFAULT_MODEL=<你账号里有的模型>，并先用 `generate-image-models`
+        # 或 doctor 看自己账号有什么。
+        #
+        # 两种错误码含义不同，且报文措辞正好相反，实测区分：
+        #   404 not_found_error   code 5 "model is not found"
+        #       -> 这个账号确实没有该模型。不可重试，换模型。
+        #   403 permission_denied code 7 "model is not available in the current
+        #       token plan"
+        #       -> 读着像"没开通"，实际是**限流**：同 key 同模型，403 是 1–2 秒秒回、
+        #          成功要 40–74 秒，冷却约 20 秒后恢复 200（已实测）。故登记进
+        #          throttle_statuses 当可重试处理。
+        #   一度以为 403 的规律是"带 size 就报"，被对照实验推翻（带 size 成功过、
+        #   不带 size 也 403 过）—— 真正的变量是调用节奏。
+        #
+        # 另：u1-pro **不在 /v1/models 列表里却能调用**，那个目录不完整，
+        # 不能拿来判断可用性。
+        #
+        # 出图特征（key B 实测）：u1-pro 1856x1856 / b64_json；
+        # u1.5-lite 2048x2048 / b64_json，但 ~138s 很慢。key A 上的 u1-fast 是
+        # 唯一返回 url 形态的，7–14 秒最快、2752x1536。
+        default_model="sensenova-u1-pro",
+        models=frozenset({
+            "sensenova-u1-fast", "sensenova-u1.5-lite", "sensenova-u1-pro",
+        }),
+        background_unsupported=frozenset(),   # 未实测；厂商未提 background
+        # 仍未确认：没有账单面板可核对，故保持保守方向（按失败也计费处理，
+        # 让重试更克制）。注意 400 是秒回且未出图，通常不计费。
+        # 仍未确认：没有账单面板可核对，故保持保守方向（按失败也计费处理，
+        # 让重试更克制）。注意 400/403 都是秒回且未出图，通常不计费。
+        bills_on_failure=True,
+        supports_idempotency=False,           # 未确认
+        # 实测这家对调用节奏很敏感（见 default_model 上方那段 403 说明），
+        # 所以并发压到 1、rpm 压低、并给一个退避下限 —— 与 147ai 同样的处置。
+        # 背靠背发就是白等：403 秒回，重试太快只会再撞一次。
+        rpm=6,
+        max_retries=3,
+        default_concurrency=1,
+        backoff_floor=20.0,
+        # 这家把"太快了"说成 403 权限错误。实测它会自己恢复（403 秒回，20 秒后
+        # 同 key 同模型 HTTP 200），所以按可重试处理 —— 否则一次限流会变成硬失败。
+        throttle_statuses=frozenset({403}),
+        max_ref_images=5,                     # 官方文档：images 至多 5 张
+        supports_seed=False,                  # 未实测
+        supports_quality=False,               # 未实测，绝不臆测计费杠杆
+    ),
     "volcengine": Provider(
         name="volcengine",
         base_url="https://ark.cn-beijing.volces.com/api/v3",
@@ -400,7 +528,10 @@ DEFAULT_PROVIDER = "openai"
 # backoff floor, so it should be chosen deliberately rather than by default.
 # Every registered provider MUST appear here — list_models ranks by this tuple.
 ROUTER_PRIORITY = ("openai", "302ai", "openrouter", "siliconflow",
-                   "volcengine", "147ai")
+                   "volcengine", "147ai",
+                   # 末位：部分字段仍未实测（计费口径、seed），不该在 auto 路由里
+                   # 抢在已验证的 provider 前面。
+                   "sensenova")
 
 
 def _override_prefix(provider: Provider) -> str:
@@ -530,6 +661,10 @@ def ratio_to_size(provider: Provider, ratio: str) -> str | None:
         return OPENAI_RATIO_SIZE.get(ratio, "1024x1024")
     if provider.size_style == "openai_custom":
         return OPENAI_CUSTOM_RATIO_SIZE.get(ratio, "1024x1024")
+    if provider.size_style == "sensenova":
+        # Fall back to the server's own default member rather than to a value the
+        # contract would reject with a 400.
+        return SENSENOVA_RATIO_SIZE.get(ratio, "2048x2048")
     if provider.size_style == "wxh":
         return SILICONFLOW_RATIO_SIZE.get(ratio, "1328x1328")
     if provider.size_style == "ark":

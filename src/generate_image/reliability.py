@@ -82,16 +82,28 @@ class ProviderError(Exception):
 
 
 def is_retryable_status(status: int, *, bills_on_failure: bool,
-                        supports_idempotency: bool) -> bool:
+                        supports_idempotency: bool,
+                        throttle_statuses: frozenset[int] | None = None) -> bool:
     """Billing-aware retry decision for an HTTP status code.
 
     * 408/429 -> always retryable (rejected before a billable generation).
+    * a status listed in `throttle_statuses` -> retryable. This exists because some
+      gateways report a *rate limit* with a status that normally means something
+      permanent. sensenova answers a too-fast call with 403
+      "model is not available in the current token plan", which reads like an
+      entitlement problem but clears on its own after a cooldown (measured: 403 in
+      1-2s, then HTTP 200 twenty seconds later, on the same key and model).
+      Treating that as permanent would turn a throttle into a hard failure.
+      Only list a status here where the transient behaviour was actually observed —
+      the default (None) keeps the strict classification for everyone else.
     * other 4xx -> never retryable (the request itself is malformed/unauthorized).
     * 5xx -> ambiguous (the server may have generated + billed already); retry
       ONLY when the provider does not bill failures, or supports idempotency keys
       so a retry is deduped.
     """
     if status in _ALWAYS_RETRYABLE:
+        return True
+    if throttle_statuses and status in throttle_statuses:
         return True
     if 400 <= status < 500:
         return False

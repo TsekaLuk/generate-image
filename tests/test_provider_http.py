@@ -421,3 +421,135 @@ def test_volcengine_pro_rejects_sequence_before_network():
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+# --- sensenova img2img: the exact JSON shape the API demands -------------------
+
+def _capture_sensenova_edit(refs, ratio="1:1"):
+    seen = {}
+
+    def handler(req):
+        seen["path"] = req.url.path
+        seen["body"] = _body(req)
+        return httpx.Response(200, json={"data": [{"b64_json": _B64}]})
+
+    with _client(handler) as c:
+        seen["out"] = generate.provider_edit(
+            PROVIDERS["sensenova"], "把背景改成雪山", "sensenova-u1-pro",
+            refs, ratio, "k", c)
+    return seen
+
+
+def test_sensenova_edit_uses_plural_images_of_objects(tmp_path):
+    """The two details the API is strict about, and the two this code got wrong
+    for a whole round of black-box probing: the field is plural `images`, and each
+    entry is an OBJECT keyed `image_url` — a bare string in the array is refused."""
+    ref = tmp_path / "a.png"
+    ref.write_bytes(_TINY_PNG)
+    seen = _capture_sensenova_edit([str(ref)])
+    assert seen["path"] == "/v1/images/edits"
+    assert "image" not in seen["body"], "singular `image` is not the field"
+    entries = seen["body"]["images"]
+    assert isinstance(entries, list) and isinstance(entries[0], dict)
+    assert set(entries[0]) == {"image_url"}
+
+
+def test_sensenova_edit_wraps_local_files_as_data_urls(tmp_path):
+    # Raw base64 with no prefix is refused by the API, so the prefix is mandatory.
+    ref = tmp_path / "a.png"
+    ref.write_bytes(_TINY_PNG)
+    seen = _capture_sensenova_edit([str(ref)])
+    url = seen["body"]["images"][0]["image_url"]
+    assert url.startswith("data:image/png;base64,"), url[:40]
+
+
+def test_sensenova_edit_passes_public_urls_through_untouched():
+    seen = _capture_sensenova_edit(["https://example.com/source.png"])
+    assert seen["body"]["images"][0]["image_url"] == "https://example.com/source.png"
+
+
+def test_sensenova_edit_keeps_reference_order(tmp_path):
+    # The doc says entry 1 is the primary image being edited, so order matters.
+    a, b = tmp_path / "a.png", tmp_path / "b.png"
+    a.write_bytes(_TINY_PNG)
+    b.write_bytes(_TINY_PNG)
+    seen = _capture_sensenova_edit(["https://example.com/first.png", str(b)])
+    assert seen["body"]["images"][0]["image_url"] == "https://example.com/first.png"
+    assert seen["body"]["images"][1]["image_url"].startswith("data:")
+
+
+def test_sensenova_edit_sends_the_output_fields_too(tmp_path):
+    ref = tmp_path / "a.png"
+    ref.write_bytes(_TINY_PNG)
+    seen = _capture_sensenova_edit([str(ref)], ratio="16:9")
+    assert seen["body"]["watermark"] is False
+    assert seen["body"]["prompt_extend"] is False
+    assert seen["body"]["size"] == "2720x1536"
+    assert seen["body"]["n"] == 1
+
+
+def test_sensenova_edit_refuses_more_than_five_refs(tmp_path):
+    refs = []
+    for i in range(6):
+        f = tmp_path / f"{i}.png"
+        f.write_bytes(_TINY_PNG)
+        refs.append(str(f))
+    with _client(lambda r: httpx.Response(200, json={})) as c:
+        with pytest.raises(generate.ProviderError, match="at most 5"):
+            generate.provider_edit(PROVIDERS["sensenova"], "p", "sensenova-u1-pro",
+                                   refs, "1:1", "k", c)
+
+
+def test_sensenova_actually_puts_the_size_on_the_wire():
+    """Regression: `sensenova` was added to VALID_SIZE_STYLES and ratio_to_size but
+    NOT to the branch that writes `size` into the body, so every call silently fell
+    back to the server default — `-r 21:9` came back 2752x1536 (16:9). The map being
+    right is worthless if the value never leaves the process."""
+    seen = _capture_openai_generate(PROVIDERS["sensenova"], "21:9", "sensenova-u1-pro")
+    assert seen["body"]["size"] == "3136x1344"
+
+
+def test_sensenova_sends_no_ratio_hint():
+    # The size carries the aspect for real here, so the prompt stays clean.
+    seen = _capture_openai_generate(PROVIDERS["sensenova"], "21:9", "sensenova-u1-pro")
+    assert seen["body"]["prompt"] == "一只猫"
+
+
+def test_sensenova_every_ratio_goes_out_within_the_documented_contract():
+    for ratio in sorted(generate.VALID_RATIOS):
+        seen = _capture_openai_generate(PROVIDERS["sensenova"], ratio, "sensenova-u1-pro")
+        w, h = (int(v) for v in seen["body"]["size"].split("x"))
+        assert w % 32 == 0 and h % 32 == 0, f"{ratio}: {w}x{h} not a multiple of 32"
+        assert 512 <= w <= 4096 and 512 <= h <= 4096, f"{ratio}: {w}x{h} out of range"
+
+
+def test_sensenova_generation_disables_watermark_and_prompt_rewriting():
+    """Both default to TRUE server-side. A silent vendor watermark on every asset
+    is a defect, and a silently rewritten prompt breaks the series-consistency
+    contracts this skill is built around."""
+    seen = _capture_openai_generate(PROVIDERS["sensenova"], "1:1", "sensenova-u1-pro")
+    assert seen["body"]["watermark"] is False
+    assert seen["body"]["prompt_extend"] is False
+
+
+def test_only_sensenova_gets_those_fields():
+    # They are SenseNova-specific; sending them elsewhere would be an unknown key.
+    seen = _capture_openai_generate(PROVIDERS["302ai"], "1:1", "gpt-image-2.5-flare")
+    assert "watermark" not in seen["body"] and "prompt_extend" not in seen["body"]
+
+
+# --- sensenova img2img: the exact JSON shape the API demands -------------------
+
+def _capture_sensenova_edit(refs, ratio="1:1"):
+    seen = {}
+
+    def handler(req):
+        seen["path"] = req.url.path
+        seen["body"] = _body(req)
+        return httpx.Response(200, json={"data": [{"b64_json": _B64}]})
+
+    with _client(handler) as c:
+        seen["out"] = generate.provider_edit(
+            PROVIDERS["sensenova"], "把背景改成雪山", "sensenova-u1-pro",
+            refs, ratio, "k", c)
+    return seen

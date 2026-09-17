@@ -20,6 +20,7 @@ from generate_image import providers
 from generate_image.providers import (
     PROVIDERS,
     DEFAULT_PROVIDER,
+    ROUTER_PRIORITY,
     Provider,
     resolve_provider,
     ratio_to_size,
@@ -30,7 +31,7 @@ from generate_image.providers import (
 
 
 EXPECTED_PROVIDERS = {"openai", "302ai", "openrouter", "siliconflow",
-                      "volcengine", "147ai"}
+                      "volcengine", "147ai", "sensenova"}
 
 
 def test_registry_has_the_expected_providers():
@@ -352,3 +353,98 @@ def test_147ai_declared_styles_are_registered_as_valid():
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+# --- sensenova: now measured against the live gateway --------------------------
+
+def test_sensenova_routing_facts_are_the_measured_ones():
+    """These four were verified with real calls on 2026-09-17; the rest of the
+    entry still leans conservative because it could not be measured."""
+    p = PROVIDERS["sensenova"]
+    assert p.base_url == "https://token.sensenova.cn"   # api.sensenova.cn 404s
+    assert p.gen_path == "/v1/images/generations"
+    assert p.gen_style == "openai"
+    assert p.size_style == "sensenova", "size is a honored enum, not free-form"
+
+
+def test_sensenova_sizes_obey_the_documented_contract():
+    """Doc (2026-09-15): multiples of 32, 512..4096 on the tighter model, aspect
+    within 3:1. A value outside that is a guaranteed 400, so pin every entry —
+    including the fallback used for a ratio with no mapping."""
+    def check(size, label):
+        w, h = (int(v) for v in size.split("x"))
+        assert w % providers.SENSENOVA_SIZE_STEP == 0, f"{label}={size} not a multiple of 32"
+        assert h % providers.SENSENOVA_SIZE_STEP == 0, f"{label}={size} not a multiple of 32"
+        assert providers.SENSENOVA_SIZE_MIN <= w <= providers.SENSENOVA_SIZE_MAX, label
+        assert providers.SENSENOVA_SIZE_MIN <= h <= providers.SENSENOVA_SIZE_MAX, label
+        assert 1 / 3 <= w / h <= 3, f"{label}={size} outside the 3:1 window"
+
+    for ratio, size in providers.SENSENOVA_RATIO_SIZE.items():
+        check(size, ratio)
+        a, b = (int(v) for v in ratio.split(":"))
+        assert abs((w := int(size.split("x")[0])) / int(size.split("x")[1]) - a / b) / (a / b) < 0.01, (
+            f"{ratio}->{size}")
+    check(ratio_to_size(PROVIDERS["sensenova"], "7:3"), "fallback")
+
+
+def test_sensenova_size_table_matches_the_docs_recommended_values():
+    """Where the vendor doc names a size for a ratio, use theirs rather than our
+    own computation — staying on their suggested grid avoids surprises."""
+    for ratio, size in {"1:1": "2048x2048", "16:9": "2720x1536", "9:16": "1536x2720",
+                        "3:2": "2496x1664", "2:3": "1664x2496"}.items():
+        assert providers.SENSENOVA_RATIO_SIZE[ratio] == size
+
+
+def test_sensenova_every_cli_ratio_is_mapped():
+    assert cli.VALID_RATIOS <= set(providers.SENSENOVA_RATIO_SIZE)
+
+
+def test_sensenova_sizes_track_the_requested_aspect():
+    # The enum has no true 21:9 bucket, so 4.4% is the honest tolerance here.
+    for ratio, size in providers.SENSENOVA_RATIO_SIZE.items():
+        a, b = (int(v) for v in ratio.split(":"))
+        w, h = (int(v) for v in size.split("x"))
+        assert abs((w / h) - (a / b)) / (a / b) < 0.044, f"{ratio}->{size}"
+
+
+def test_sensenova_unverified_capabilities_stay_off():
+    """Unmeasured capabilities must not drift into being claimed. Flip these only
+    together with a probe run that shows them working."""
+    p = PROVIDERS["sensenova"]
+    assert p.supports_seed is False
+    assert p.supports_quality is False, "never assume a billing multiplier"
+    assert p.bills_on_failure is True, "conservative until there is a bill to check"
+    assert p.supports_idempotency is False
+    assert p.edit_path == "/v1/images/edits"
+    assert p.edit_style == "sensenova_json"
+    assert p.max_ref_images == 5, "doc: images accepts at most 5"
+
+
+def test_sensenova_is_last_in_router_priority():
+    # Still last: the entry is only partly measured (edits, billing, seed unknown).
+    assert ROUTER_PRIORITY[-1] == "sensenova"
+
+
+
+
+def test_version_is_single_sourced_from_package_metadata():
+    """The version lived in BOTH __init__.py and pyproject.toml and they drifted
+    (2.1.0 vs 2.2.0), so every metadata sidecar recorded a version the code had
+    not been at for a while. Keep it derived from the installed package."""
+    import tomllib
+    from pathlib import Path
+    import generate_image
+
+    declared = tomllib.loads(
+        (Path(__file__).resolve().parents[1] / "pyproject.toml").read_text()
+    )["project"]["version"]
+    assert generate_image.__version__ == declared, (
+        f"package reports {generate_image.__version__}, pyproject declares {declared} "
+        "— reinstall (uv sync) or stop hardcoding the version"
+    )
+
+
+def test_sidecar_records_that_same_version():
+    from generate_image.cli import PKG_VERSION
+    import generate_image
+    assert PKG_VERSION == generate_image.__version__

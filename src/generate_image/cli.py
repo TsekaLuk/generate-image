@@ -47,6 +47,7 @@ from .providers import (
     DEFAULT_IMAGE_CONFIG_SIZE,
     IMAGE_CONFIG_SIZES,
     Provider,
+    _override_prefix,
     apply_model_dialect,
     endpoint_unset,
     resolve_provider,
@@ -197,10 +198,20 @@ def _post(client: httpx.Client, url: str, key: str, provider: Provider, *,
             resp.status_code,
             bills_on_failure=provider.bills_on_failure,
             supports_idempotency=provider.supports_idempotency,
+            throttle_statuses=provider.throttle_statuses,
         )
         ra = retry_after_seconds(resp.headers) if resp.status_code in (408, 429) else None
+        hint = ""
+        if resp.status_code == 404 and "model" in resp.text.lower():
+            # Measured on sensenova: which models an account can call varies per
+            # key, and /v1/models does not list them all. A bare "model is not
+            # found" leaves the user with no next step, so name one.
+            hint = (f" — this account may not have that model; run"
+                    f" `generate-image-models` to see the registry, and set"
+                    f" {_override_prefix(provider)}_DEFAULT_MODEL=<a model your"
+                    f" account has> to change the default without editing code")
         raise ProviderError(
-            f"{provider.name} HTTP {resp.status_code}: {resp.text[:500]}",
+            f"{provider.name} HTTP {resp.status_code}: {resp.text[:500]}{hint}",
             retryable=retryable, retry_after=ra, status=resp.status_code,
         )
     return resp
@@ -308,7 +319,8 @@ def _shape_prompt(provider: Provider, prompt: str, ratio: str) -> str:
     because a relay fronting gpt-image may ignore `size` and reshape to whatever the
     prompt implies; on the official API the hint is a harmless extra steer.
     """
-    if provider.size_style in ("wxh", "image_config", "openai_xl", "openai_custom"):
+    if provider.size_style in ("wxh", "image_config", "openai_xl", "openai_custom",
+                               "sensenova"):
         return prompt
     hint = RATIO_HINT.get(ratio, "")
     return f"{prompt}。{hint}" if hint else prompt
@@ -409,7 +421,8 @@ def provider_generate(provider: Provider, prompt: str, model: str, ratio: str,
         body = {"model": model, "prompt": _shape_prompt(provider, prompt, ratio), "n": 1}
     size = ratio_to_size(provider, ratio)
     if (provider.gen_style != "ark"
-            and provider.size_style in ("openai", "openai_xl", "openai_custom") and size):
+            and provider.size_style in ("openai", "openai_xl", "openai_custom",
+                                        "sensenova") and size):
         body["size"] = size
     elif provider.size_style == "wxh" and size:
         body["image_size"] = size
@@ -417,6 +430,12 @@ def provider_generate(provider: Provider, prompt: str, model: str, ratio: str,
     # unknown top-level key, so it is only sent on the image-generation dialects.
     if background and provider.gen_style != "chat_image_config":
         body["background"] = background
+    # SenseNova stamps a watermark and rewrites the prompt unless told otherwise;
+    # both are sent explicitly on the generation path too. See
+    # _sensenova_output_fields for why the vendor defaults are wrong here.
+    if provider.size_style == "sensenova":
+        body["watermark"] = False
+        body["prompt_extend"] = False
     # `quality` rides the same dialects as `size`. The guard above already refused
     # it everywhere it would be ignored, so reaching here means it is honored.
     if quality and quality != "auto" and provider.supports_quality:
@@ -521,8 +540,69 @@ def provider_edit(provider: Provider, prompt: str, model: str, refs: list[str],
         return _edit_image_prompt(provider, prompt, model, refs, ratio, key, client, idem_key)
     if style == "ark_json":
         return _edit_ark_json(provider, prompt, model, refs, ratio, key, client, idem_key)
+    if style == "sensenova_json":
+        return _edit_sensenova_json(provider, prompt, model, refs, ratio, key,
+                                    client, idem_key)
     raise ProviderError(f"{provider.name} unknown edit_style {style!r}", retryable=False)
 
+
+def _edit_sensenova_json(provider, prompt, model, refs, ratio, key, client,
+                         idem_key) -> bytes:
+    """SenseNova img2img: a JSON body whose `images` are objects keyed `image_url`.
+
+    Two details the API is strict about, and both were learned the hard way:
+      * the field is plural `images`, and each entry is an OBJECT — a bare string
+        in the array is rejected;
+      * `image_url` takes a public http/https URL or a full `data:image/*;base64,`
+        Data URL. A raw base64 string with no prefix is refused outright, so local
+        files are wrapped into a Data URL here rather than sent as bare base64.
+    The first entry is the primary image being edited; the rest are references.
+    """
+    entries: list[dict] = []
+    for ref in refs:
+        if ref.startswith(("http://", "https://")):
+            entries.append({"image_url": ref})       # passed through untouched
+        else:
+            data, mime, _name = _read_ref(ref, client)
+            entries.append({
+                "image_url": f"data:{mime};base64,{base64.b64encode(data).decode()}"
+            })
+    body = {
+        "model": model,
+        "prompt": prompt,
+        "images": entries,
+        "n": 1,
+        **_sensenova_output_fields(provider, ratio),
+    }
+    resp = _post(client, provider.base_url + provider.edit_path, key, provider,
+                 json_body=body, idem_key=idem_key)
+    return extract_image_bytes(_parse_json(resp, provider), client,
+                               provider_name=provider.name)
+
+
+def _sensenova_output_fields(provider: Provider, ratio: str) -> dict:
+    """Output-shaping fields shared by SenseNova's generations and edits bodies.
+
+    `watermark` and `prompt_extend` both default to TRUE server-side, and both
+    defaults are wrong for this tool, so they are always sent explicitly — which
+    is also what the vendor doc advises, so a future default change cannot move
+    the behaviour underneath us:
+
+      * watermark=False — the server otherwise stamps a SenseNova logo onto every
+        image. A generated asset silently carrying a vendor watermark is a defect,
+        not a preference. NOTE the doc says no-watermark is free during the public
+        beta and is expected to become a paid feature later.
+      * prompt_extend=False — the server otherwise rewrites the prompt before
+        generating. This skill's series work depends on the exact prompt reaching
+        the model (see the consistency-contract section in SKILL.md); silent
+        rewriting is what breaks identity across siblings. The doc states u1-pro
+        cannot actually turn this off, so there it is sent and ignored.
+    """
+    fields = {"watermark": False, "prompt_extend": False}
+    size = ratio_to_size(provider, ratio)
+    if size:
+        fields["size"] = size
+    return fields
 
 def _edit_multipart(provider, prompt, model, refs, ratio, key, client, background,
                     idem_key) -> bytes:

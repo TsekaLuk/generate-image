@@ -9,4 +9,13 @@ Public modules:
   * list_models  — `generate-image-models` entry point
 """
 
-__version__ = "2.1.0"
+# Single source of truth: read the version the package was INSTALLED with, so the
+# number in a metadata sidecar always matches the code that produced the image.
+# It used to be hardcoded here and also declared in pyproject.toml — the two drifted
+# and every sidecar recorded the stale one.
+from importlib.metadata import PackageNotFoundError, version as _version
+
+try:
+    __version__ = _version("generate-image")
+except PackageNotFoundError:          # running from a source tree, not installed
+    __version__ = "0+unknown"

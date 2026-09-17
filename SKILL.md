@@ -24,6 +24,119 @@ requirements. Use `-p` to force a provider. Run
 | `siliconflow` | `/v1/images/generations` | ✅ image_prompt | `image_size` WxH(真控) | `SILICONFLOW_API_KEY` |
 | `volcengine` | `/api/v3/images/generations` | ✅ Ark JSON `image[]` (local refs → Base64) | `size: 2K` + `-r` hint | `ARK_API_KEY` |
 | `147ai` | 双方言,随模型自动切换(见下) | ✅ 两条线都支持 | **真控**,可到 4K | `AI147_API_KEY` |
+| `sensenova` | `/v1/images/generations` | ✅ JSON `images[{image_url}]`(≤5 张) | `size` 自定义 WxH(32 的倍数),约 4.2MP | `SENSENOVA_API_KEY` |
+
+### `sensenova`(商汤 SenseNova / 日日新) —— 2026-09-17 实测
+
+**高分辨率档**:出图约 **4.2MP**,是本 skill 里仅次于 147ai 4K 的分辨率来源,
+是本 skill 里的高分辨率来源之一。
+
+**模型矩阵(每个都真实调用过):**
+
+**⚠️ 模型可用性按账号变化 —— 这是用这家最先要知道的事。**
+两把不同的 key 实测对比(同一 base_url,2026-09-17):
+
+| 模型 | key A | key B |
+|---|---|---|
+| **`sensenova-u1-pro`**(默认) | ⚠️ 间歇 403 限流 | ✅ 200,74s,1856x1856(3.44MP) |
+| `sensenova-u1-fast` | ✅ 200,7–14s,2752x1536(4.23MP) | ❌ **404 model is not found** |
+| `sensenova-u1.5-lite` | ✅ 200,~143s | ✅ 200,138s,2048x2048(4.19MP) |
+| `/v1/models` 目录 | 8 个模型 | 只有 2 个 |
+
+**没有哪个模型在两把 key 上都稳**,所以选不出"永远安全"的默认值。
+默认取 `u1-pro`(厂商主推的正式版)。
+
+**换 key 后默认模型 404 的话,不用改代码:**
+
+```bash
+uv run generate-image-models            # 先看注册表
+export SENSENOVA_DEFAULT_MODEL=sensenova-u1.5-lite   # 换成你账号里有的
+```
+
+404 的报错里已经带了这两句提示。
+
+返回形态也不统一:`u1-fast` 回 `url`,`u1-pro` / `u1.5-lite` 回 `b64_json`
+(两种本 skill 都处理)。
+
+**`size` 是固定枚举,真生效。** 非法值直接 400,而那条 400 报文自己把合法集合
+列全了(这也是 `SENSENOVA_RATIO_SIZE` 的来源,不是抄文档):
+
+```
+1664x2496, 2496x1664, 1760x2368, 2368x1760, 1824x2272, 2272x1824,
+2048x2048, 2752x1536, 1536x2752, 3072x1376, 1344x3136, 2560x720, 3072x864
+```
+
+十个比例都能映到合法成员,最差的是 `21:9 → 3072x1376`(2.233 vs 2.333,差 4.3%),
+因为枚举里没有真正的 21:9 桶。
+
+**⚠️ 两种错误码含义正好和字面相反,别弄混:**
+
+| 状态 | 报文 | 真实含义 | 怎么办 |
+|---|---|---|---|
+| **404** | `model is not found`(not_found_error, code 5) | 这个**账号确实没有**该模型 | 换模型 / 设 `SENSENOVA_DEFAULT_MODEL` |
+| **403** | `model is not available in the current token plan`(permission_denied, code 7) | **限流**,不是没开通 | 等冷却,本 skill 已按可重试处理 |
+
+**⚠️ `u1-pro` 的两个坑,都已实测:**
+
+1. **它不出现在 `/v1/models` 里,但可以调用。** 那个目录不完整,
+   别拿它判断可用性。
+2. **它会间歇性回 HTTP 403 `model is not available in the current token plan`。**
+   这个报文看着像权限/未开通,**实际不是** —— 同一个 key、同一分钟内,
+   成功与 403 交替出现:成功那次要 40–66 秒,403 是 1–2 秒秒回;
+   8 次调用 4 成 4 败。**冷却 20 秒后再发就恢复 200**,定性确认是限流。
+   > 中途一度以为规律是"带 `size` 就 403",被对照实验推翻了:带 `size` 成功过,
+   > 不带 `size` 也 403 过。真正的变量是**调用节奏**。
+
+   因此本 skill 把 403 在**这一个 provider 上**登记为可重试
+   (`throttle_statuses={403}`),并配 `concurrency=1` / `rpm=6` /
+   20 秒退避下限 —— 否则一次限流会变成硬失败。其他 provider 的 403 仍然
+   是"不可重试"。
+
+**✅ 图生图(`--ref`)走 JSON 方言,不是 multipart。** 请求体形如:
+
+```json
+{"model":"sensenova-u1-pro",
+ "images":[{"image_url":"https://… 或 data:image/png;base64,…"}],
+ "prompt":"把背景改成雪山,人物保持不变","n":1,"size":"2720x1536"}
+```
+
+三个容易踩的点(都写在官方文档里):
+
+- 字段是**复数 `images`**,数组里是**对象**、键名 `image_url` —— 数组里放裸字符串会被拒
+- `image_url` 只收**公网 http/https 链接**或**带 `data:image/*;base64,` 前缀的 Data URL**,
+  **纯裸 base64 不支持**。本 skill 会把本地文件自动包成 Data URL
+- 至多 **5 张**,**第 1 张是主编辑图**,其余为参考;本 skill 保持 `--ref` 的输入顺序
+
+> 📌 血泪教训:这条链路曾被我标成"不支持",因为黑盒试了 11 种形态全败。
+> 对照文档才发现两个维度各错一半 —— 试过 `images=[裸字符串]`、也试过
+> `image=[{url:…}]`,**唯独没试到 `images=[{image_url:…}]` 这个组合**。
+> 而网关对所有错误形态都回同一句
+> `invalid images, should contain between 1 and 5 items`(那只是"一张图都没解析到"
+> 的默认提示,连不含 `image` 字段的请求也报它),所以报错本身对定位字段名零信息量。
+> **结论:形态类问题别靠黑盒猜,去要一份能跑通的示例请求。**
+
+### ⚠️ 两个服务端默认值是坑,本 skill 一律显式覆盖
+
+| 参数 | 服务端默认 | 我们发的 | 为什么 |
+|---|---|---|---|
+| `watermark` | **`true`** | `false` | 默认会在**每张图上打商汤 Logo 水印**。生成资产悄悄带厂商水印是缺陷,不是偏好。⚠️ 文档说去水印当前**公测免费,后续转付费** |
+| `prompt_extend` | **`true`** | `false` | 默认会**改写你的提示词**再生成。本 skill 的系列一致性(见"Coherent series generation")依赖提示词原样送达,静默改写正是破坏跨图身份一致性的元凶。文档说 **u1-pro 无法关闭**,那里发了也会被忽略 |
+
+文档也建议显式传 `watermark`,以免将来默认值变更影响线上业务 —— 我们正是这么做的。
+
+### `size` 是自定义 WxH,不是固定枚举
+
+官方契约:**32 的倍数**,u1-pro 512–8192(最大比例 5:1)、u1.5-lite 512–4096(最大 3:1),
+`auto` 由服务端决定。本 skill 的映射表取官方建议的 2K 档(~4.2MP),
+其中 `1:1 / 16:9 / 9:16 / 3:2 / 2:3` 直接用官方给的值,其余按同一像素预算算出来。
+
+> 早先版本这里是一张**固定枚举**,抄自一条 400 报文
+> (`should be one of: 1664x2496, …`)。那个枚举是真的,但属于
+> **`sensenova-u1-fast`** —— 一个不在本文档里的模型,当时只是因为第一把 key 只能调它。
+> 别把它搬回 u1-pro / u1.5-lite。
+
+**其余仍未实测的**(保持保守,别当成结论):`seed` / `quality` / `background`、
+以及计费口径(没有账单面板可核对,故按"失败也计费"处理)。
 
 ### `147ai`(nn.147ai.com,站名 Nano Banana)
 
