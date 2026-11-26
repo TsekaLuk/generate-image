@@ -31,10 +31,14 @@ Brand recognition (Jenni Romaniuk: **Fame × Uniqueness**) must **never have a s
 4. **Graphic / Behavioral Motif DNA:** Recurring modular pattern, optical/motion physics, framing device, or bespoke illustration/character language (*include a mascot or character ONLY when authentic to the brand's real habitat — never by habit or dogma*).
 5. **Material, Tactile & Tonal Physics:** Color roles & ratios (not decorative rainbow fills), surface tactility, lighting/photography temperament, and intentional negative-space rhythm.
 
-### B. Derive Deliverables Organically from Real Habitat
-- Ask: *"Which 5–10 concrete artifacts will prove to a demanding stakeholder that this identity actually works in the real world?"*
+### B. Derive Rich, Book-Scale Deliverables Organically from Real Habitat
+- **5-Layer Composable Scope (Never Starve a Rich Brand into a Thin Pamphlet):** Organize deliverables across **L0 Strategy & Verbal** → **L1 Core Visual Constitution** (Mark, Wordmark, Color+WCAG, Typography Ramp, Spatial Grid) → **L2 Substitutable Expression Engines** (pick the 1–3 engines truly native to this brand: Auxiliary Geometry, Logo Skins, Photography/Art Direction, Illustration/Icons, Hardware CMF, Motion/Sonic, or Mascot IP) → **L3 Relevant Touchpoints** (include *every* real-world channel coupled to the brand core: hardware, cleanroom/spatial, cloud/UI + Design Tokens, pitch/whitepaper editorial, social/content, keynote/stage, stationery, packaging) → **L4 Governance & Book/Web Delivery** (multi-chapter print-ready PDF Brand Book + interactive HTML Brand Hub + canonical `.svg` / `tokens.json` + honest external handoff specs).
 - Give every artifact **real information density and functional purpose** (real copy, UI, metadata, specs, editorial rhythm) — never hollow placeholder shells that only dare to stamp a company name.
 - When an entity spans contrasting contexts (e.g., institutional/partner rigor *and* expressive public/product surfaces), explicitly define **which Constants stay locked** vs. **which Variables flex**.
+
+### C. Multi-Hop Cross-Referencing DAG Orchestration (`A → B(A) → C(A,B) → D(A..C) → Book/Hub`)
+- Go beyond flat `1 → N` star fan-out whenever building a comprehensive brand world: compose **multi-hop converging DAGs** where upstream anchors (`A`: symbol, wordmark) feed mid-tier system masters (`B`: optical motif, CMF material board, lockups), which jointly cross-reference into downstream hardware/spatial/editorial/campaign nodes (`C, D`: e.g. `refs: ["@A1", "@A2", "@B2", "@B3"]`), and finally converge into **book-scale deterministic PDF spreads (`kind: render`, `pdf: true`)**, **interactive Web Brand Hubs**, and **long-scroll showcases (`kind: stitch`)** that cross-reference 10–25+ upstream assets simultaneously.
+- Every upstream hash change cascades cleanly through `--resume` content-hash invalidation, guaranteeing zero stale drift across multi-hop descendants.
 
 ---
 
