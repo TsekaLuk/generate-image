@@ -1,63 +1,59 @@
-# Playbook: Meta-Cognitive Brand & Visual Identity Systems (Archetype-Agnostic)
+# Playbook: First-Principles Visual Identity & Brand Systems
 
-> **Core Meta-Cognitive Law (Read First):**
-> **Never conflate a universal *Quality Bar* with a single industry's *Visual Style*.**
-> An AI Agent PaaS (`Linear` / `Vercel` / `Anthropic`), a To-B/To-G institutional media group, a luxury fragrance house, and a To-C new-retail consumer app live in **completely different visual universes** — with completely different symbols, color physics, typography, touchpoints, and presentation grammars.
+> **Why there is NO fixed industry lookup table in this playbook:**
+> The real world is not a 5-row enum. Two extraordinary organizations inside the exact same industry can legitimately occupy opposite aesthetic poles — and any rigid `"if sector == X → output {A, B, C}"` rule merely replaces visual thinking with stereotypes.
 >
-> **Anti-Few-Shot-Overfitting Rule:** When a user shares reference links or screenshots to critique design quality, extract ONLY the **style-agnostic quality invariants** (*originality, craft ceiling, visual tension, real-world usability, narrative conviction*). **NEVER blindly transplant the reference's industry tropes** (e.g., 3D vinyl mascots, sticker packs, or consumer app empty states) onto an unrelated business model!
+> Instead of prescribing styles or fixed mockup shopping lists, this playbook defines **the cognitive process** by which a strong creative director derives an original, credible, deliverable visual system from scratch for *any* entity.
 
 ---
 
-## 1. Mandatory 4-Axis Brand Diagnosis (Before Generating a Single Pixel)
+## 1. Sense-Making Before Form (Deconstruct Before Drawing)
 
-Explicitly establish these 4 axes from conversation context (or ask 1 crisp clarifying question if the business model is genuinely ambiguous):
+Before generating a single pixel or deciding what artifacts to produce, answer four grounded questions — using conversation context, workspace files, and **live web research** when stepping into an unfamiliar domain:
 
-1. **Transaction Topology:** `To-C Consumer` · `AI SaaS / PaaS / Agent / DevTools` · `To-B Enterprise / Industrial` · `To-G / Institutional / Cultural` · `B2B2C Dual-Register`.
-2. **Decision-Maker Psychology:** What makes the real buyer/user trust or desire this brand? *(e.g. technical authority & speed for developers; institutional permanence & cultural gravitas for B2G/B2B; emotional magnetism & social currency for To-C).*
-3. **Real-World Touchpoint Gravity:** Where does this organization **actually** meet people? Derive the deliverable list strictly from real touchpoints — **never run a fixed copy-paste mockup checklist!**
-4. **Domain-Native Gold-Standard Benchmarks:** Identify 2–3 real contemporary leaders *inside this exact sector* to calibrate aesthetic judgment before starting Stage 1.
-
----
-
-## 2. Archetype Touchpoint & Visual Grammar Matrix
-
-The **exact same `generate-image` v3.2 primitives** (`grid` exploration → `trace_svg` Bezier vectorization → opaque star-topology generation → `kind: render` precision layout/UI/specs → `kind: stitch` narrative presentation) instantiate totally different brand worlds depending on the archetype:
-
-| Archetype | Core Identity Language | Authentic Visual System (NO Foreign Tropes) | High-Value Real Touchpoints |
-|---|---|---|---|
-| **AI SaaS / PaaS / Agent / DevTools** *(Benchmarks: Linear, Vercel, Anthropic, Stripe, Raycast, Runway)* | Razor-sharp minimal geometric/optical symbol + bespoke neo-grotesque / mono wordmark | Optical depth, restrained dark/light surface tokens, hairline borders, procedural light-fields / data-flow schematics, kinetic precision (**NO cartoonish mascots** unless explicitly consumer playful AI) | App Icon / Favicon · Vector Wordmark · Dark/Light UI Token Sheet · Launch Hero & Bento Feature Cards · CLI / SDK / Docs Header · Announcement OG Cards · Developer Conference Keynote & Lanyard |
-| **To-B Enterprise / Industrial / Finance** *(Benchmarks: Pentagram, Wolff Olins, Collins, Landor)* | Monolithic sculptural emblem + authoritative custom architectural logotype | Structured modular grid, high-contrast executive palette, technical diagram/chart language, tactile architectural materiality | Vector System & Print Manual PDF · Executive Pitch Deck Covers · Annual Report & Whitepaper · Summit Keynote Stage Backdrop · Restrained Architectural Signage (14%–22% wall width) · Business Stationery |
-| **To-G / Cultural Institution / Public Media** *(Benchmarks: M+ Museum, Studio Dumbar, UCCA, A24, 雅昌, 靳刘高)* | Contemporary distilled cultural/architectural emblem + bespoke calligraphic or editorial wordmark | Editorial typographic poise, curated fine-art/documentary photography, architectural wayfinding grammar, disciplined negative space | Exhibition / Forum Main Visual Poster · Hardcover Monograph / Catalog · Stage & Spatial Wayfinding · Official Credentials · Editorial Digital Portal · Print-Ready VI Manual PDF |
-| **B2B2C Dual-Register** *(e.g. Media Group serving Gov/Enterprise + Public; Healthcare Platform)* | **One unbreakable core mark & grid** powering **two calibrated registers**: Calm Institutional Core (B/G) + Expressive Campaign Layer (C) | Strict rules defining what stays invariant (mark, wordmark, core grid) vs what flexes between partner decks and public campaigns | Dual-Register Identity Spec · Partner/Forum Keynote & Report (B/G register) + Public Exhibition / Digital Product / Campaign Visuals (C register) |
-| **To-C Consumer / New Retail / Lifestyle / IP Apps** *(Benchmarks: Aesop, Teenage Engineering, Batoer, Duolingo, Pop-Mart)* | Iconic super-symbol, bespoke handcrafted display logotype, and/or charismatic 2D/3D brand IP | High-voltage brand super-color, tactile materiality, playful or lifestyle-driven storytelling, frame-breaking visual energy | Packaging & Unboxing Family · Storefront / Pop-up / Street Campaign · Character/Motion Sheet & Stickers (if IP-driven) · Social Campaign Visuals · Consumer App UI & Empty States |
+1. **Essence & Tension:** What does this organization *actually* do, believe, or push against? What single conceptual tension differentiates it from an interchangeable competitor?
+2. **Real Habitat & Human Moment:** Where do real people (users, buyers, developers, citizens, audiences, partners) actually encounter this identity — and what must they *feel* in the first two seconds? *(Trust? Sharpness? Warmth? Restraint? Speed? Playfulness? Authority?)*
+3. **Category Clichés to Reject:** What does the average, forgettable competitor in this space already look like? Name 2–3 overused category tropes upfront and explicitly ban them so the work refuses to regress to the statistical mean.
+4. **Live Contemporary Calibration:** Ground your quality bar in **real, current, non-generic craft** — never freeze outdated templates, and **never confuse a user's quality reference with a style mandate**. Extract *craft rigor* from benchmarks, then invent a visual language native to *this* subject.
 
 ---
 
-## 3. Style-Agnostic Tool Routing (Right Tool for Each Cognitive Layer)
+## 2. Derive the System & Artifact Topology Organically
 
-Regardless of archetype, route each cognitive layer to the tool with the highest quality ceiling:
+A visual identity is **not** a single logo pasted onto a standard set of mockups — it is an **internally consistent visual language** where every element reinforces the same core idea:
 
-1. **High-Ceiling Creative Ideation (`kind: generate` + `grid: 2x3` / `3x3`, `gpt-image-2.6-sunburst`):**
-   - Use for **original graphic emblems, handcrafted custom CJK/Latin logotypes, procedural optical shaders, editorial photography, tactile 3D artifacts, architectural spaces, and (when domain-appropriate) character design**.
-   - **Hard Rule:** NEVER degrade creative ceiling by hand-coding primitive `<rect>` SVGs for a signature logo mark or passing off unmodified OS system fonts as a bespoke brand wordmark!
-2. **Vector Productionization (`trace_svg: true` + Leaf RGBA Cutouts):**
-   - Refine winning flat graphic marks and handcrafted logotypes on 100% solid pure white (`#FFFFFF`, `background: opaque`) with **`trace_svg: true`** → automatically outputs smooth multi-color Bezier `.svg` masters (`potrace` / `vtracer`).
-   - Isolate transparent RGBA versions (`background: transparent`) strictly as **leaf deliverables** — NEVER feed RGBA PNGs into downstream img2img `--ref`!
-3. **Deterministic Typography, Real UI & Production Specs (`kind: render`, ¥0):**
-   - Render genuine **product UIs (dashboards, terminals, bento cards, web portals), print-ready real-copy layouts (posters with real schedules, reports, cards with real contact hierarchy), and mathematical VI spec sheets / multi-page PDFs (Pantone / CMYK / RGB / HEX / clearspace / min sizes / Don'ts)** using HTML/CSS + inline vectorized SVG + upstream AI visual assets (`{{refs.<id>}}`).
-4. **Physical Scene Staging (`kind: generate`, `background: opaque`):**
-   - When photographic physical context is needed, stage directly from **finished flat artwork** (`@poster_flat`, `@report_flat`, `@card_flat`, `@web_flat`) so typography, hierarchy, and real information density transfer with zero font drift.
-   - Keep environmental signage architecturally restrained (**14%–22% wall width**).
-5. **Narrative Showcase Assembly (`kind: render` chapters → `kind: stitch`, ¥0):**
-   - Match the presentation grammar to the brand's archetype (crisp technical product-launch story for AI PaaS; gallery/architectural monograph cadence for To-B/To-G/Cultural; high-energy rhythmic long scroll for To-C) — NEVER force every client into one fixed template!
+- **Core Visual Signature:** Could be a sculpted graphic emblem, a custom handcrafted wordmark/logotype, an optical/generative visual motif, a distinctive typographic voice, a tactile material system, a character/figure — or a restrained combination. Choose *only* the elements that authentically serve the subject's habitat (never force a mascot, or forbid one, by dogma).
+- **Coherent Grammar:** Define the governing rules of proportion, stroke/surface character, color physics (role & ratio, not random decoration), typographic hierarchy, and negative space so that even with the logo hidden, the work remains unmistakably attributable.
+- **Native Artifact Selection:** Derive the deliverable set strictly from **where the brand actually lives**:
+  - Ask: *"Which 5–10 concrete artifacts would prove to a skeptical stakeholder that this identity actually works in real life?"*
+  - Give every artifact **real information density and functional purpose** (real hierarchy, real copy/UI/metadata/specs) — never hollow placeholder shells that only dare to print the company name.
+  - If the entity operates across multiple distinct contexts (e.g. formal institutional/partner settings *and* expressive public/product touchpoints), explicitly define **what stays invariant** vs **how the visual register flexes**.
 
 ---
 
-## 4. Universal 5-Invariant Quality Gate (Applies to Every Industry)
+## 3. Placing the Generative ↔ Deterministic Handoff Boundary
 
-Before shipping ANY anchor or final delivery, audit against all 5 style-agnostic invariants:
-1. **Domain-Truth Alignment:** Would an insider in *this specific industry* immediately recognize the visual language as native, credible, and contemporary?
-2. **Craft Ceiling & Originality:** Is the core mark / wordmark / visual metaphor genuinely distinctive and trademark-worthy (not a stock cliché or hand-coded primitive)?
-3. **Zero Drift & Real Usability:** Exact mark/logotype fidelity across every deliverable; real `.svg` vectors, real production color/type specs, real usable information density (no empty placeholder mockups).
-4. **Compositional Tension & Rhythm:** Deliberate macro/micro scale contrast, intentional negative space, cohesive palette discipline — never monotonous gray-bordered PPT grids.
-5. **Adversarial 3-Second Benchmark Critique:** Explicitly name the **top 3 flaws** compared to the domain-matched gold-standard benchmarks chosen in Section 1. Reject and iterate until genuinely competitive.
+`generate-image` provides two complementary substrates — **neither is a style**, and each has a distinct cognitive ceiling:
+
+- **Generative Exploration & Materiality (`kind: generate`, `grid: 2x3` / `3x3`):**
+  - Excels at unbounded sculptural/typographic ideation, bespoke handcrafted lettering, illustration, procedural light/optical studies, photography, tactile surfaces, and spatial staging.
+  - **Key discipline:** Never cripple creative imagination by hand-coding primitive geometric shapes (`<rect>`) as a signature emblem, or passing off unmodified OS system fonts as a bespoke brand logotype. Explore broadly first, cull ruthlessly, then lock an **opaque canonical master** (never feed transparent RGBA PNGs as upstream `--ref`!).
+- **Deterministic Preservation & Assembly (`trace_svg: true`, `kind: render`, `kind: stitch`):**
+  - **`trace_svg: true`:** Vectorizes crisp flat generative marks and custom logotypes into smooth multi-color Bezier `.svg` production files (`potrace` / `vtracer`).
+  - **`kind: render` (HTML/SVG → high-DPI PNG / PDF, ¥0):** Guarantees exact repeatable typography, authentic dense copy/product UI/technical diagrams, print-ready production spec sheets (color codes, clearspace, minimum sizes, misuse rules), and multi-page PDF handoff.
+  - **Flat-First Staging Pattern:** When photographic realism is needed for typography-heavy physical or screen artifacts, render the finished flat artwork deterministically first (`kind: render`), then pass it as `--ref` into `kind: generate` (`background: opaque`) to stage tactile light and materiality without font drift.
+  - **`kind: stitch` (¥0):** Assembles modular reviewed sections into a seamless narrative showcase (long scroll or multi-spread presentation) whose visual cadence matches *this* brand's own temperament — never a one-size-fits-all template.
+
+---
+
+## 4. Critical Self-Audit (Before Anything Reaches the User)
+
+Audit at full resolution across two strictly separate layers:
+
+- **Layer A · Technical Hygiene (Baseline, 0 → 60):**
+  - Stroke-for-stroke fidelity to opaque anchors; zero font drift; zero garbled characters; true opaque RGB for photographic scenes (`background: opaque`) and clean alpha for leaf transparent assets; genuine `.svg`/`.pdf` production artifacts where promised.
+- **Layer B · Design Craft & Conviction (Deliverable Bar, 60 → 100):**
+  - **Authenticity:** Does every visual decision feel inevitably born from *this* subject — with zero transplanted tropes from unrelated sectors or few-shot examples?
+  - **Distinctiveness:** Does the core visual idea survive stripping away all explanatory text?
+  - **Tension & Polish:** Does the composition exhibit deliberate scale contrast, breathing rhythm, and authentic material/digital craft (zero sterile uniform-box PPT feel)?
+  - **Adversarial Doubt:** Actively articulate the **sharpest criticism a harsh creative director would level right now**. If that criticism holds water, fix the root cause and iterate before delivering.
