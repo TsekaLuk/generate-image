@@ -55,6 +55,7 @@ Before compiling prompts for a specific visual genre, read the matching playbook
 - **Infographics / Knowledge Diagrams / Flowcharts** → [`playbooks/infographic.md`](playbooks/infographic.md)
 - **Commercial / Product Photography / E-Commerce** → [`playbooks/commercial-photo.md`](playbooks/commercial-photo.md)
 - **Posters / Covers / Swiss Editorial Graphic Design** → [`playbooks/poster-editorial.md`](playbooks/poster-editorial.md)
+- **Brand VI Systems (Vector + Typography + Real-World Staging)** → [`playbooks/brand-vi-system.md`](playbooks/brand-vi-system.md)
 - **Brand Icons / UI Assets / Transparent RGBA Stickers** → [`playbooks/brand-icon-asset.md`](playbooks/brand-icon-asset.md)
 - **N-in-1 Concept Boards & Short-Drama (短剧) 3×3 Storyboards** → [`playbooks/board-storyboard.md`](playbooks/board-storyboard.md)
 - **Coherent Character / Storybook Illustration Decks** → [`playbooks/series-storybook.md`](playbooks/series-storybook.md)
@@ -499,6 +500,7 @@ board auto-slicing, content-hash resume, and automatic QA artifacts:
 
 - **Shared DNA (zero repetition, zero drift):** `vars:` (`--var KEY=VALUE`), `defaults:`, `blocks:` (`{{blocks.style}}`), and structured 6-layer `spec:` (`deliverable`, `subject`, `info_points`, `composition`, `style`, `lighting`, `context`, `negatives`).
 - **Parametric Scale:** `matrix:` Cartesian product (with object dims & `exclude:` rules + auto `tags`), `foreach:` list expansion, and `provider_pool:` round-robin sharding.
+- **Hybrid Deterministic Vector/Editorial Nodes (`kind: render`, ¥0 cost):** Declare `svg:`/`svg_file:`/`html:`/`html_file:` (`width`, `height`, `scale`, `background: "transparent"`, `pdf: true`) to render exact vectors, real typography, and print-ready flat artwork locally via headless Chromium (auto-exporting `.svg` + `.png`) and inject upstream AI outputs via `{{refs.<id>}}`.
 - **Board Auto-Slicing:** Declare `grid: "3x3"` or `grid: {rows: 2, cols: 3, trim_pct: 2.0, labels: [...]}` on any task; downstream tasks reference panels via `@board:C` or `@board[2]`.
 - **Resilience & Staged Execution:** `--resume` (content-hash `.dag-manifest.json` hashing prompt + params + resolved upstream ref file bytes so anchor changes auto-invalidate descendants), `--only-roots` / `--stage` / `--until` / `--only`, and `--max-cost CNY`.
 - **Automatic Review Artifacts (opt out with `--no-gallery`):** `contact_sheet.png` (paginated ≤16 cells for Agent vision QA) and offline interactive `gallery.html` (stage/tag filters, Light/Dark/Checkerboard RGBA switcher, lightbox prompt inspector, ★ Keep / ✕ Reject export).

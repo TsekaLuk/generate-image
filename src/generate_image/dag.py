@@ -34,6 +34,11 @@ from . import board
 REF_PREFIX = "@"
 MANIFEST_FILENAME = ".dag-manifest.json"
 
+# Task.kind values
+KIND_GENERATE = "generate"
+KIND_RENDER = "render"
+KIND_CHOICES = (KIND_GENERATE, KIND_RENDER)
+
 # TaskResult.status values
 SUCCESS = "success"
 CACHED = "cached"
@@ -52,9 +57,9 @@ _SLICE_BRACKET_RE = re.compile(r"^([^:\[\]]+)\[([0-9]+)\]$")
 
 @dataclass(frozen=True)
 class Task:
-    """One image-generation node in the DAG."""
+    """One image-generation or deterministic local render node in the DAG."""
     id: str
-    prompt: str
+    prompt: str = ""
     provider: str | None = None
     model: str | None = None
     ratio: str | None = None
@@ -70,6 +75,16 @@ class Task:
     tags: dict[str, str] = field(default_factory=dict)
     grid: board.GridSpec | None = None
     provider_pool: tuple[str, ...] = ()
+    # Deterministic local vector/HTML rendering fields (kind="render", zero API cost)
+    kind: str = KIND_GENERATE
+    html: str | None = None
+    html_file: str | None = None
+    svg: str | None = None
+    svg_file: str | None = None
+    width: int | None = None
+    height: int | None = None
+    scale: float = 2.0
+    pdf: bool = False
 
 
 @dataclass
@@ -255,6 +270,7 @@ def compute_task_hash(task: Task, resolved_refs: list[str]) -> str:
         else:
             ref_digests.append(f"lit:{r}")
     payload = {
+        "kind": task.kind,
         "prompt": task.prompt,
         "provider": task.provider,
         "model": task.model,
@@ -267,6 +283,17 @@ def compute_task_hash(task: Task, resolved_refs: list[str]) -> str:
         "grid": task.grid.to_fingerprint() if task.grid else None,
         "refs": ref_digests,
     }
+    if task.kind == KIND_RENDER:
+        payload.update({
+            "html": task.html,
+            "html_file": f"file:{_sha256_file(Path(task.html_file))}" if task.html_file and Path(task.html_file).is_file() else task.html_file,
+            "svg": task.svg,
+            "svg_file": f"file:{_sha256_file(Path(task.svg_file))}" if task.svg_file and Path(task.svg_file).is_file() else task.svg_file,
+            "width": task.width,
+            "height": task.height,
+            "scale": task.scale,
+            "pdf": task.pdf,
+        })
     raw = json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
     return hashlib.sha256(raw).hexdigest()
 
@@ -348,6 +375,12 @@ def run_dag(tasks: list[Task],
         out_path = entry.get("output_path")
         if not out_path or not Path(out_path).is_file():
             return None
+        if task.kind == KIND_RENDER:
+            out_p = Path(out_path)
+            if (task.svg is not None or task.svg_file is not None) and not out_p.with_suffix(".svg").is_file():
+                return None
+            if task.pdf and not out_p.with_suffix(".pdf").is_file():
+                return None
         slices = entry.get("slices") or {}
         if task.grid is not None:
             expected = set(task.grid.resolved_labels())
@@ -445,6 +478,8 @@ def _render_str(text: str, ctx: dict) -> str:
 
         def repl(m: re.Match) -> str:
             key = m.group(1)
+            if key.startswith(("ref.", "refs.", "ref_data.", "refs_data.")):
+                return m.group(0)
             val = _lookup_path(ctx, key)
             if val is None:
                 # Also check blocks/vars shorthand without prefix
@@ -520,8 +555,17 @@ def _matches_exclude(combo: dict[str, object], excludes: list[dict]) -> bool:
     return False
 
 
+def _resolve_template_file(raw_path: str | None, dag_dir: Path | None) -> str | None:
+    if raw_path is None:
+        return None
+    p = Path(raw_path).expanduser()
+    if not p.is_absolute() and dag_dir is not None:
+        p = (dag_dir / p).resolve()
+    return str(p)
+
+
 def _expand_entry(rt: dict, *, defaults: dict, blocks: dict, base_vars: dict,
-                  index: int) -> list[Task]:
+                  index: int, dag_dir: Path | None = None) -> list[Task]:
     if not isinstance(rt, dict):
         raise DagError(f"task #{index} must be a mapping")
     matrix = rt.get("matrix")
@@ -569,6 +613,15 @@ def _expand_entry(rt: dict, *, defaults: dict, blocks: dict, base_vars: dict,
             raise DagError(f"task #{index} is missing a string 'id'")
         tid = _render_str(raw_id, ctx)
 
+        raw_html = merged_base.get("html")
+        raw_html_file = merged_base.get("html_file")
+        raw_svg = merged_base.get("svg")
+        raw_svg_file = merged_base.get("svg_file")
+        has_render_src = any(x is not None for x in (raw_html, raw_html_file, raw_svg, raw_svg_file))
+        kind = str(merged_base.get("kind") or (KIND_RENDER if has_render_src else KIND_GENERATE))
+        if kind not in KIND_CHOICES:
+            raise DagError(f"task {tid!r} invalid kind {kind!r}; choose from {KIND_CHOICES}")
+
         raw_prompt = merged_base.get("prompt")
         raw_spec = merged_base.get("spec")
         if raw_prompt and raw_spec:
@@ -577,8 +630,23 @@ def _expand_entry(rt: dict, *, defaults: dict, blocks: dict, base_vars: dict,
             prompt = _compile_structured_spec(raw_spec, ctx)
         elif isinstance(raw_prompt, str) and raw_prompt.strip():
             prompt = _render_str(raw_prompt, ctx)
+        elif kind == KIND_RENDER:
+            src_label = raw_svg_file or raw_html_file or ("inline svg" if raw_svg is not None else "inline html")
+            prompt = f"[render] {src_label}"
         else:
             raise DagError(f"task {tid!r} must specify 'prompt' or 'spec'")
+
+        if kind == KIND_RENDER and not has_render_src:
+            raise DagError(f"render task {tid!r} must specify one of html, html_file, svg, or svg_file")
+
+        html_text = _render_str(str(raw_html), ctx) if raw_html is not None else None
+        html_file = _resolve_template_file(_render_str(str(raw_html_file), ctx), dag_dir) if raw_html_file is not None else None
+        svg_text = _render_str(str(raw_svg), ctx) if raw_svg is not None else None
+        svg_file = _resolve_template_file(_render_str(str(raw_svg_file), ctx), dag_dir) if raw_svg_file is not None else None
+        width = int(merged_base["width"]) if merged_base.get("width") is not None else None
+        height = int(merged_base["height"]) if merged_base.get("height") is not None else None
+        scale = float(merged_base["scale"]) if merged_base.get("scale") is not None else 2.0
+        pdf = bool(merged_base.get("pdf", False))
 
         raw_refs = merged_base.get("refs") or ()
         refs = tuple(_render_str(str(r), ctx) for r in raw_refs)
@@ -634,18 +702,28 @@ def _expand_entry(rt: dict, *, defaults: dict, blocks: dict, base_vars: dict,
             tags=tags,
             grid=grid_spec,
             provider_pool=pool,
+            kind=kind,
+            html=html_text,
+            html_file=html_file,
+            svg=svg_text,
+            svg_file=svg_file,
+            width=width,
+            height=height,
+            scale=scale,
+            pdf=pdf,
         ))
     return out
 
 
 # --- spec loading (YAML / JSON) -----------------------------------------------
 
-def parse_dag(data: object, *, cli_vars: dict[str, str] | None = None) -> list[Task]:
+def parse_dag(data: object, *, cli_vars: dict[str, str] | None = None,
+              dag_dir: Path | None = None) -> list[Task]:
     """Turn a parsed spec mapping (`{"tasks": [...], ...}`) into validated Tasks.
 
     Supports optional top-level `vars`, `defaults`, `blocks`, structured `spec`,
-    `matrix`/`foreach` expansion, and `grid` specs while remaining 100% compatible
-    with flat `{"tasks": [...]}` specs.
+    `matrix`/`foreach` expansion, `grid` specs, and deterministic `kind: render`
+    nodes while remaining 100% compatible with flat `{"tasks": [...]}` specs.
     """
     if not isinstance(data, dict) or "tasks" not in data:
         raise DagError("dag spec must be a mapping with a 'tasks' list")
@@ -664,7 +742,7 @@ def parse_dag(data: object, *, cli_vars: dict[str, str] | None = None) -> list[T
     tasks: list[Task] = []
     for i, rt in enumerate(raw):
         tasks.extend(_expand_entry(rt, defaults=defaults, blocks=blocks,
-                                   base_vars=spec_vars, index=i))
+                                   base_vars=spec_vars, index=i, dag_dir=dag_dir))
 
     _check_acyclic(build_graph(tasks))
     return tasks
@@ -695,4 +773,4 @@ def load_dag(path: str, *, cli_vars: dict[str, str] | None = None) -> list[Task]
             raise DagError(f"invalid YAML dag spec {path}: {e}") from e
     else:
         raise DagError(f"unsupported dag spec extension {suffix!r}; use .json / .yaml / .yml")
-    return parse_dag(data, cli_vars=cli_vars)
+    return parse_dag(data, cli_vars=cli_vars, dag_dir=p.resolve().parent)

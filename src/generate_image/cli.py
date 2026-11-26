@@ -39,6 +39,7 @@ from . import dag
 from . import flow
 from . import gallery
 from . import probe
+from . import render
 from . import __version__ as PKG_VERSION
 from .providers import (
     EXTENDED_QUALITY_MODELS,
@@ -1550,6 +1551,17 @@ def _dry_run_plan(args) -> None:
         json_tasks: list[dict] = []
         routed: list[str] = []
         for t in tasks:
+            if t.kind == dag.KIND_RENDER:
+                dims = f"{t.width or 'auto'}x{t.height or 'auto'}@{t.scale:g}x"
+                extra = f" stage={t.stage}" if t.stage else ""
+                if t.pdf:
+                    extra += " pdf=true"
+                if t.svg is not None or t.svg_file is not None:
+                    extra += " svg=true"
+                print(f"→   {t.id}: kind=render provider=local dims={dims}{extra}", file=sys.stderr)
+                json_tasks.append({"id": t.id, "kind": "render", "provider": "local",
+                                   "model": "chromium-render", "stage": t.stage, "tags": t.tags})
+                continue
             provider = _resolve_task_provider(t, args, allow_unconfigured=True)
             prov = provider.name
             model = t.model or (provider.gif_models[0] if (t.gif and provider.gif_models) else provider.default_model)
@@ -1566,14 +1578,14 @@ def _dry_run_plan(args) -> None:
                                "ratio": ratio, "stage": t.stage, "tags": t.tags})
             routed.append(prov)
         counts = Counter(routed)
-        print(f"→ images:   {len(tasks)}", file=sys.stderr)
-        print(f"→ cost:     {_cost_phrase(counts, quality=args.quality)}", file=sys.stderr)
+        render_n = sum(1 for t in tasks if t.kind == dag.KIND_RENDER)
+        print(f"→ images:   {len(tasks)}" + (f" ({render_n} local render, {len(routed)} AI)" if render_n else ""), file=sys.stderr)
+        cost_str = "¥0.00 (local render only)" if not counts else _cost_phrase(counts, quality=args.quality)
+        print(f"→ cost:     {cost_str}", file=sys.stderr)
         if args.json:
             print(json.dumps({
                 "mode": "dag", "images": len(tasks),
-                # Must carry the tier too: the JSON estimate is what scripts read,
-                # so an un-toned number here is the same lie in a worse place.
-                "estimated_cost_cny": _billed_cost(counts, None, args.quality)[0],
+                "estimated_cost_cny": 0.0 if not counts else _billed_cost(counts, None, args.quality)[0],
                 "tasks": json_tasks,
             }, ensure_ascii=False))
         return
@@ -1724,7 +1736,8 @@ def _run_dag_file(args, out_dir: Path) -> None:
     _load_dotenv()
 
     # Validate per-task provider/ratio up front (fail before any billed request).
-    for t in tasks:
+    gen_tasks = [t for t in tasks if t.kind != dag.KIND_RENDER]
+    for t in gen_tasks:
         if t.provider and t.provider != AUTO_PROVIDER and t.provider not in PROVIDERS:
             sys.exit(f"error: task {t.id!r} unknown provider {t.provider!r}; "
                      f"choices: {[AUTO_PROVIDER, *PROVIDERS]}")
@@ -1732,16 +1745,16 @@ def _run_dag_file(args, out_dir: Path) -> None:
             sys.exit(f"error: task {t.id!r} invalid ratio {t.ratio!r}; "
                      f"choose from {sorted(VALID_RATIOS)}")
 
-    task_providers = {t.id: _resolve_task_provider(t, args) for t in tasks}
+    task_providers = {t.id: _resolve_task_provider(t, args) for t in gen_tasks}
 
-    # Hard budget ceiling check (--max-cost) before any request is sent.
+    # Hard budget ceiling check (--max-cost) before any request is sent (local render nodes cost ¥0).
     max_cost = getattr(args, "max_cost", None)
-    if max_cost is not None:
-        est_counts = Counter(task_providers[t.id].name for t in tasks)
+    if max_cost is not None and task_providers:
+        est_counts = Counter(task_providers[t.id].name for t in gen_tasks)
         est_total, _billed, _varies = _billed_cost(est_counts, None, args.quality)
         if est_total is not None and est_total > max_cost:
             sys.exit(
-                f"error: DAG estimated cost ≈¥{est_total:.2f} over {len(tasks)} task(s) "
+                f"error: DAG estimated cost ≈¥{est_total:.2f} over {len(gen_tasks)} AI task(s) "
                 f"exceeds --max-cost ¥{max_cost:g}. Nothing was sent."
             )
 
@@ -1749,19 +1762,46 @@ def _run_dag_file(args, out_dir: Path) -> None:
     # worker threads), instead of once per task.
     if args.seed is not None:
         warned: set[str] = set()
-        for t in tasks:
+        for t in gen_tasks:
             prov = task_providers[t.id]
             if not prov.supports_seed and prov.name not in warned:
                 warned.add(prov.name)
                 _warn_seed_unsupported(prov)
 
     concurrency = args.concurrency or 4
-    client = make_client(args.timeout)
+    client = make_client(args.timeout) if gen_tasks else None
     buckets: dict[str, TokenBucket] = {}
     limiters: dict[str, AdaptiveConcurrency] = {}
     keys: dict[str, str] = {}
 
+    def _build_ref_map(task: dag.Task, resolved_refs: list[str]) -> dict[str, str]:
+        ref_map: dict[str, str] = {}
+        for raw_ref, resolved in zip(task.refs, resolved_refs):
+            if raw_ref.startswith(dag.REF_PREFIX):
+                body = raw_ref[len(dag.REF_PREFIX):]
+                ref_map[body] = resolved
+                dep = dag._ref_dep(raw_ref)
+                if dep and dep not in ref_map:
+                    ref_map[dep] = resolved
+        return ref_map
+
     def execute(task: dag.Task, refs: list[str]) -> bytes:
+        if task.kind == dag.KIND_RENDER:
+            ref_map = _build_ref_map(task, refs)
+            png_bytes, resolved_svg = render.execute_render_task(
+                task, refs, ref_map=ref_map, out_dir=out_dir,
+            )
+            stem = task.name or task.id
+            if resolved_svg is not None:
+                svg_path = out_dir / f"{stem}.svg"
+                svg_path.parent.mkdir(parents=True, exist_ok=True)
+                svg_path.write_text(resolved_svg, encoding="utf-8")
+            if task.pdf and (task.html is not None or task.html_file is not None):
+                base_dir = Path(task.html_file).parent if task.html_file else out_dir
+                raw_html = Path(task.html_file).read_text(encoding="utf-8") if task.html_file else str(task.html)
+                resolved_html = render.interpolate_refs(raw_html, refs, ref_map)
+                render.render_html_to_pdf(resolved_html, out_dir / f"{stem}.pdf", base_dir=base_dir)
+            return png_bytes
         provider = task_providers[task.id]
         if task.gif:
             model = task.model or (provider.gif_models[0] if provider.gif_models else provider.default_model)
@@ -1813,7 +1853,8 @@ def _run_dag_file(args, out_dir: Path) -> None:
     except dag.DagError as e:
         sys.exit(f"error: {e}")
     finally:
-        client.close()
+        if client is not None:
+            client.close()
 
     json_items: list[dict] = []
     gallery_items: list[dict] = []
@@ -1832,9 +1873,13 @@ def _run_dag_file(args, out_dir: Path) -> None:
         n_cached += r.status == dag.CACHED
         n_fail += r.status == dag.FAILED
         n_skip += r.status == dag.SKIPPED
-        provider = task_providers[t.id]
-        prov_name = provider.name
-        model = t.model or (provider.gif_models[0] if (t.gif and provider.gif_models) else provider.default_model)
+        if t.kind == dag.KIND_RENDER:
+            prov_name = "local"
+            model = "chromium-render"
+        else:
+            provider = task_providers[t.id]
+            prov_name = provider.name
+            model = t.model or (provider.gif_models[0] if (t.gif and provider.gif_models) else provider.default_model)
         w = h = frames_n = 0
         if r.status in (dag.SUCCESS, dag.CACHED) and r.output_path:
             png = Path(r.output_path)
@@ -1852,6 +1897,13 @@ def _run_dag_file(args, out_dir: Path) -> None:
                                     stage=t.stage, tags=t.tags)
         is_ok = r.status in (dag.SUCCESS, dag.CACHED)
         item_json: dict = {"id": t.id, "ok": is_ok, "path": r.output_path, "error": r.error}
+        if t.kind == dag.KIND_RENDER and r.output_path:
+            svg_p = Path(r.output_path).with_suffix(".svg")
+            pdf_p = Path(r.output_path).with_suffix(".pdf")
+            if svg_p.is_file():
+                item_json["svg_path"] = str(svg_p)
+            if pdf_p.is_file():
+                item_json["pdf_path"] = str(pdf_p)
         if r.status == dag.CACHED:
             item_json["cached"] = True
         if r.slices:
@@ -1879,7 +1931,8 @@ def _run_dag_file(args, out_dir: Path) -> None:
           file=sys.stderr)
     billed_counts = Counter(
         task_providers[t.id].name
-        for t in tasks if results[t.id].status in (dag.SUCCESS, dag.FAILED)
+        for t in tasks
+        if t.kind != dag.KIND_RENDER and results[t.id].status in (dag.SUCCESS, dag.FAILED)
     )
     if billed_counts:
         print(f"→ spent: {_cost_phrase(billed_counts, quality=args.quality)}", file=sys.stderr)

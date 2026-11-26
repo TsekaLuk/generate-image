@@ -21,7 +21,30 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageOps
+from PIL import Image, ImageDraw, ImageFont, ImageOps
+
+_CJK_FONT_CANDIDATES = (
+    "/System/Library/Fonts/PingFang.ttc",
+    "/System/Library/Fonts/Hiragino Sans GB.ttc",
+    "/System/Library/Fonts/STHeiti Medium.ttc",
+    "/System/Library/Fonts/Supplemental/Songti.ttc",
+    "/Library/Fonts/Arial Unicode.ttf",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+    "C:/Windows/Fonts/msyh.ttc",
+)
+
+
+def _load_ui_font(size: int = 13):
+    """Load a crisp CJK-capable system font for contact-sheet labels, with safe fallback."""
+    for path in _CJK_FONT_CANDIDATES:
+        if Path(path).is_file():
+            try:
+                return ImageFont.truetype(path, size=size)
+            except OSError:
+                continue
+    return ImageFont.load_default()
 
 
 @dataclass(frozen=True)
@@ -154,9 +177,11 @@ def _render_single_sheet(items: list[dict], out_path: Path, *, cols: int,
     canvas_h = header_h + rows * (cell_h + pad) + pad
     canvas = Image.new("RGB", (canvas_w, canvas_h), (20, 22, 27))
     draw = ImageDraw.Draw(canvas)
+    title_font = _load_ui_font(16)
+    label_font = _load_ui_font(12)
 
     if title:
-        draw.text((pad, 14), title, fill=(235, 238, 245))
+        draw.text((pad, 13), title, fill=(235, 238, 245), font=title_font)
 
     # Subtle checkerboard tile for visualising transparent RGBA thumbnails
     checker = Image.new("RGB", (cell_w, thumb_size), (38, 41, 49))
@@ -194,7 +219,7 @@ def _render_single_sheet(items: list[dict], out_path: Path, *, cols: int,
         if not rendered:
             status = item.get("status") or ("ok" if item.get("ok") else "failed")
             draw.rectangle((x0, y0, x0 + cell_w, y0 + thumb_size), fill=(42, 32, 36))
-            draw.text((x0 + 12, y0 + thumb_size // 2 - 6), f"[{status}]", fill=(230, 140, 140))
+            draw.text((x0 + 12, y0 + thumb_size // 2 - 6), f"[{status}]", fill=(230, 140, 140), font=label_font)
 
         # Label bar underneath
         label = str(item.get("id") or Path(str(img_path or idx)).stem)
@@ -208,7 +233,7 @@ def _render_single_sheet(items: list[dict], out_path: Path, *, cols: int,
         caption = f"{label}{dims}{tag_str}"
         if len(caption) > 48:
             caption = caption[:45] + "..."
-        draw.text((x0 + 8, y0 + thumb_size + 10), caption, fill=(225, 229, 238))
+        draw.text((x0 + 8, y0 + thumb_size + 10), caption, fill=(225, 229, 238), font=label_font)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     canvas.save(out_path, format="PNG")
