@@ -1,59 +1,75 @@
 # Playbook: First-Principles Visual Identity & Brand Systems
 
-> **Why there is NO fixed industry lookup table in this playbook:**
-> The real world is not a 5-row enum. Two extraordinary organizations inside the exact same industry can legitimately occupy opposite aesthetic poles — and any rigid `"if sector == X → output {A, B, C}"` rule merely replaces visual thinking with stereotypes.
+> **Why there are NO industry lookup tables, `/mode` flags, or fixed mockup checklists here:**
+> Mapping user examples or industries into hardcoded parameters produces **"blanding"** — statistically safe, interchangeable stereotypes. Two extraordinary brands inside the exact same sector can legitimately occupy opposite aesthetic poles.
 >
-> Instead of prescribing styles or fixed mockup shopping lists, this playbook defines **the cognitive process** by which a strong creative director derives an original, credible, deliverable visual system from scratch for *any* entity.
+> Grounded in foundational and contemporary brand-system practice — Karl Gerstner (*Designing Programmes*), Martin Lorenz (*Flexible Visual Systems*), Jenni Romaniuk (*Distinctive Brand Assets*), Martin Lindstrom (*"Smash Your Brand"*), Michael Johnson (*Step 2.5*), Kenya Hara, A Black Cover Design (*"Suitable"* / *"design the information-processing grammar, not a picture"*), and D&AD benchmark craft — this playbook defines **the cognitive architecture** for building an original, resilient, category-benchmark visual identity for *any* entity.
 
 ---
 
-## 1. Sense-Making Before Form (Deconstruct Before Drawing)
+## 1. Strategic Deconstruction & "Step 2.5" (Bridge Strategy to Form)
 
-Before generating a single pixel or deciding what artifacts to produce, answer four grounded questions — using conversation context, workspace files, and **live web research** when stepping into an unfamiliar domain:
+Never jump directly from vague adjectives ("modern, premium, innovative") to surface decoration. Before drawing a single pixel, use conversation context, workspace files, and **live web research** (when entering an unfamiliar domain) to close **Michael Johnson's "Step 2.5"** — the conceptual leap from strategic truth to ownable visual form:
 
-1. **Essence & Tension:** What does this organization *actually* do, believe, or push against? What single conceptual tension differentiates it from an interchangeable competitor?
-2. **Real Habitat & Human Moment:** Where do real people (users, buyers, developers, citizens, audiences, partners) actually encounter this identity — and what must they *feel* in the first two seconds? *(Trust? Sharpness? Warmth? Restraint? Speed? Playfulness? Authority?)*
-3. **Category Clichés to Reject:** What does the average, forgettable competitor in this space already look like? Name 2–3 overused category tropes upfront and explicitly ban them so the work refuses to regress to the statistical mean.
-4. **Live Contemporary Calibration:** Ground your quality bar in **real, current, non-generic craft** — never freeze outdated templates, and **never confuse a user's quality reference with a style mandate**. Extract *craft rigor* from benchmarks, then invent a visual language native to *this* subject.
+1. **Real Habitat & Human Moment:** What does this entity *actually* do, believe, or solve? Where do real people (users, developers, buyers, partners, citizens, audiences) encounter it — and what perception or behavior must shift within two seconds?
+2. **Anti-Blanding Audit (Name & Ban Category Clichés):** Inspect what the forgettable statistical average in this space already looks like (generic geometric sans-serifs, safe gradients, hollow laptop/tote mockups, borrowed trends). Name 2–3 overused category tropes upfront and explicitly ban them.
+3. **Extract One Native Structural Prototype:** Derive the visual concept from a concrete truth native to the subject's own product, behavior, or culture — never from an unrelated aesthetic trend. *(Examples of the cognitive leap, never styles to copy: W Conran Design extracted Parisian street cobblestones/`pavés` into modular spatial geometry for Paris 2024; A Black Cover Design extracted tagless underwear's pain-point "Tag" into an information-coordinate grammar for Bananain; Pentagram extracted interdisciplinary modularity into a 7×7 grid programme for MIT Media Lab; Kenya Hara extracted unadorned materiality and negative space/`Ku` for MUJI.)*
+4. **Separate Quality Calibration from Surface Style:** Any benchmark link or image shared by a user calibrates **craft rigor**, NEVER a style, character format, or layout template to copy. Follow Guang Yu's **"Suitable" (合适)** principle: let the subject's internal logic dictate whether the system should be austere, expressive, brutalist, warm, architectural, or tactile.
 
 ---
 
-## 2. Derive the System & Artifact Topology Organically
+## 2. Architect the System as a Programme (Constants vs. Variables)
 
-A visual identity is **not** a single logo pasted onto a standard set of mockups — it is an **internally consistent visual language** where every element reinforces the same core idea:
+Follow Karl Gerstner's axiom (*"Instead of solutions for problems, programmes for solutions"*) and A Black Cover Design's maxim (*"Design the information-processing grammar, not a picture"*):
 
-- **Core Visual Signature:** Could be a sculpted graphic emblem, a custom handcrafted wordmark/logotype, an optical/generative visual motif, a distinctive typographic voice, a tactile material system, a character/figure — or a restrained combination. Choose *only* the elements that authentically serve the subject's habitat (never force a mascot, or forbid one, by dogma).
-- **Coherent Grammar:** Define the governing rules of proportion, stroke/surface character, color physics (role & ratio, not random decoration), typographic hierarchy, and negative space so that even with the logo hidden, the work remains unmistakably attributable.
-- **Native Artifact Selection:** Derive the deliverable set strictly from **where the brand actually lives**:
-  - Ask: *"Which 5–10 concrete artifacts would prove to a skeptical stakeholder that this identity actually works in real life?"*
-  - Give every artifact **real information density and functional purpose** (real hierarchy, real copy/UI/metadata/specs) — never hollow placeholder shells that only dare to print the company name.
-  - If the entity operates across multiple distinct contexts (e.g. formal institutional/partner settings *and* expressive public/product touchpoints), explicitly define **what stays invariant** vs **how the visual register flexes**.
+### A. Build a Redundant Multi-Layer Distinctive Brand Asset (DBA) Stack
+Brand recognition (Jenni Romaniuk: **Fame × Uniqueness**) must **never have a single point of failure** — if identity collapses the moment the logo is covered or the color changes, you built a stamp, not a system. Lock a disciplined set of **Constants** distributed across orthogonal layers so **Variables** (color worlds, imagery, medium density, layout responsiveness) can flex infinitely without fracturing identity:
+
+1. **Form & Silhouette Grammar:** Distinctive sculptural, calligraphic, or geometric DNA (custom emblem, handcrafted logotype, or modular shape language with unmistakable B&W silhouette).
+2. **Typographic Voice & Scale Ramp:** Ownable CJK/Latin pairing, weight contrast, tracking/leading cadence, and editorial hierarchy strong enough to speak even without a logo.
+3. **Spatial & Grid Grammar ("System-as-Logo"):** Consistent structural proportions, margin/framing rules, container geometry, and information-layout logic (how OpenAI, Linear, MIT Media Lab, or ABCD's *EDITOR* remain immediately attributable even with zero emblem).
+4. **Graphic / Behavioral Motif DNA:** Recurring modular pattern, optical/motion physics, framing device, or bespoke illustration/character language (*include a mascot or character ONLY when authentic to the brand's real habitat — never by habit or dogma*).
+5. **Material, Tactile & Tonal Physics:** Color roles & ratios (not decorative rainbow fills), surface tactility, lighting/photography temperament, and intentional negative-space rhythm.
+
+### B. Derive Deliverables Organically from Real Habitat
+- Ask: *"Which 5–10 concrete artifacts will prove to a demanding stakeholder that this identity actually works in the real world?"*
+- Give every artifact **real information density and functional purpose** (real copy, UI, metadata, specs, editorial rhythm) — never hollow placeholder shells that only dare to stamp a company name.
+- When an entity spans contrasting contexts (e.g., institutional/partner rigor *and* expressive public/product surfaces), explicitly define **which Constants stay locked** vs. **which Variables flex**.
 
 ---
 
 ## 3. Placing the Generative ↔ Deterministic Handoff Boundary
 
-`generate-image` provides two complementary substrates — **neither is a style**, and each has a distinct cognitive ceiling:
+`generate-image` provides two complementary engines — **neither implies a style**, and each owns a distinct craft layer:
 
 - **Generative Exploration & Materiality (`kind: generate`, `grid: 2x3` / `3x3`):**
-  - Excels at unbounded sculptural/typographic ideation, bespoke handcrafted lettering, illustration, procedural light/optical studies, photography, tactile surfaces, and spatial staging.
-  - **Key discipline:** Never cripple creative imagination by hand-coding primitive geometric shapes (`<rect>`) as a signature emblem, or passing off unmodified OS system fonts as a bespoke brand logotype. Explore broadly first, cull ruthlessly, then lock an **opaque canonical master** (never feed transparent RGBA PNGs as upstream `--ref`!).
-- **Deterministic Preservation & Assembly (`trace_svg: true`, `kind: render`, `kind: stitch`):**
-  - **`trace_svg: true`:** Vectorizes crisp flat generative marks and custom logotypes into smooth multi-color Bezier `.svg` production files (`potrace` / `vtracer`).
-  - **`kind: render` (HTML/SVG → high-DPI PNG / PDF, ¥0):** Guarantees exact repeatable typography, authentic dense copy/product UI/technical diagrams, print-ready production spec sheets (color codes, clearspace, minimum sizes, misuse rules), and multi-page PDF handoff.
-  - **Flat-First Staging Pattern:** When photographic realism is needed for typography-heavy physical or screen artifacts, render the finished flat artwork deterministically first (`kind: render`), then pass it as `--ref` into `kind: generate` (`background: opaque`) to stage tactile light and materiality without font drift.
-  - **`kind: stitch` (¥0):** Assembles modular reviewed sections into a seamless narrative showcase (long scroll or multi-spread presentation) whose visual cadence matches *this* brand's own temperament — never a one-size-fits-all template.
+  - Use for unbounded sculptural/typographic ideation, bespoke handcrafted Chinese/Latin lettering, tactile materials, photography, illustration, optical studies, and physical spatial staging.
+  - **Key discipline:** Never cripple creative ceiling by hand-coding primitive `<rect>` geometries as a signature logo or presenting raw OS system fonts as a bespoke logotype. Explore widely first, cull ruthlessly, and lock an **opaque solid-background canonical master** (never feed transparent RGBA PNGs as upstream `--ref`).
+- **Deterministic Precision & Assembly (`trace_svg: true`, `kind: render`, `kind: stitch`):**
+  - **`trace_svg: true`:** Vectorizes crisp flat generative marks/logotypes into clean multi-color Bezier `.svg` production files (`potrace` / `vtracer`).
+  - **`kind: render` (HTML/SVG → high-DPI PNG / PDF, ¥0):** Guarantees exact repeatable typography, dense real copy/product UI/diagrams, print-ready brand spec sheets (color codes, clearspace, minimum sizes, misuse rules), and multi-page PDF handoff.
+  - **Flat-First Staging Pattern:** For typography-dense physical or screen mockups needing photographic realism, render the finished flat artwork deterministically first (`kind: render`), then pass it as `--ref` into `kind: generate` (`background: opaque`) to stage real light and tactility without font drift.
+  - **`kind: stitch` (¥0):** Assembles modular reviewed sections into a seamless showcase whose rhythm matches *this* brand's own temperament — never a copied presentation template.
 
 ---
 
-## 4. Critical Self-Audit (Before Anything Reaches the User)
+## 4. Two-Layer Self-Audit & The "Element-Removal" Stress Test
 
-Audit at full resolution across two strictly separate layers:
+Audit every key deliverable at full resolution across two strictly separate layers:
 
-- **Layer A · Technical Hygiene (Baseline, 0 → 60):**
-  - Stroke-for-stroke fidelity to opaque anchors; zero font drift; zero garbled characters; true opaque RGB for photographic scenes (`background: opaque`) and clean alpha for leaf transparent assets; genuine `.svg`/`.pdf` production artifacts where promised.
-- **Layer B · Design Craft & Conviction (Deliverable Bar, 60 → 100):**
-  - **Authenticity:** Does every visual decision feel inevitably born from *this* subject — with zero transplanted tropes from unrelated sectors or few-shot examples?
-  - **Distinctiveness:** Does the core visual idea survive stripping away all explanatory text?
-  - **Tension & Polish:** Does the composition exhibit deliberate scale contrast, breathing rhythm, and authentic material/digital craft (zero sterile uniform-box PPT feel)?
-  - **Adversarial Doubt:** Actively articulate the **sharpest criticism a harsh creative director would level right now**. If that criticism holds water, fix the root cause and iterate before delivering.
+### Layer A · Technical Hygiene (Baseline, 0 → 60)
+- Stroke-for-stroke fidelity to opaque anchors; zero font drift; zero garbled characters; true opaque RGB for photographic scenes (`background: opaque`) and clean alpha only for leaf transparent assets; genuine `.svg` / `.pdf` production artifacts where promised.
+
+### Layer B · Meta-Cognitive Stress Test & D&AD Craft Bar (Deliverable Bar, 60 → 100)
+
+1. **The "Element-Removal" ("Smash Your Brand") Diagnostic Test:**
+   Systematically ablate elements one by one to expose fragile, single-crutch identities:
+   - **Ablation 1 · Strip the Logo & Brand Name:** Cover every logo and brand name — do the typographic voice, grid grammar, graphic motif, and spatial rhythm still uniquely attribute the work to *this* brand?
+   - **Ablation 2 · Strip Any Mascot / Hero Visual:** If a character, 3D figure, or hero illustration exists, remove it — does the underlying typographic and structural system still stand with unmistakable identity?
+   - **Ablation 3 · Strip Color (Grayscale / Monochrome):** Desaturate the entire system to black-and-white — do silhouette, contrast hierarchy, negative space, stroke tension, and spatial architecture still hold distinctive recognition?
+   > *Discipline note:* Passing these ablations is a **diagnostic means (手段), NOT an end in itself (目的)**. Never force gimmicks just to "pass a checklist" — use ablation strictly to verify that brand distinctiveness is structurally woven across Constants on the way to an industry-benchmark identity.
+
+2. **D&AD Three-Pillar Benchmark Gate:**
+   - **Inspiring & Ownable Idea:** Does it subvert safe category blanding with zero transplanted tropes from unrelated references or examples?
+   - **Brilliantly Crafted Execution:** Does it show deliberate scale contrast, breathing rhythm, and authentic material/digital craft (zero uniform-box PPT sterility)?
+   - **Fit for Purpose + Adversarial Doubt:** Articulate the **sharpest criticism a ruthless creative director would level right now**. If that criticism holds water, fix the root cause and iterate before delivering.
