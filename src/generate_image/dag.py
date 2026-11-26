@@ -37,7 +37,8 @@ MANIFEST_FILENAME = ".dag-manifest.json"
 # Task.kind values
 KIND_GENERATE = "generate"
 KIND_RENDER = "render"
-KIND_CHOICES = (KIND_GENERATE, KIND_RENDER)
+KIND_STITCH = "stitch"
+KIND_CHOICES = (KIND_GENERATE, KIND_RENDER, KIND_STITCH)
 
 # TaskResult.status values
 SUCCESS = "success"
@@ -85,6 +86,11 @@ class Task:
     height: int | None = None
     scale: float = 2.0
     pdf: bool = False
+    # Automatic raster-to-SVG vectorization & long-scroll stitching fields
+    trace_svg: bool = False
+    trace_colors: int = 4
+    stitch_direction: str = "vertical"
+    stitch_gap: int = 0
 
 
 @dataclass
@@ -281,8 +287,16 @@ def compute_task_hash(task: Task, resolved_refs: list[str]) -> str:
         "frames": task.frames,
         "frame_ms": task.frame_ms,
         "grid": task.grid.to_fingerprint() if task.grid else None,
+        "trace_svg": task.trace_svg,
+        "trace_colors": task.trace_colors if task.trace_svg else None,
         "refs": ref_digests,
     }
+    if task.kind == KIND_STITCH:
+        payload.update({
+            "width": task.width,
+            "stitch_direction": task.stitch_direction,
+            "stitch_gap": task.stitch_gap,
+        })
     if task.kind == KIND_RENDER:
         payload.update({
             "html": task.html,
@@ -381,6 +395,8 @@ def run_dag(tasks: list[Task],
                 return None
             if task.pdf and not out_p.with_suffix(".pdf").is_file():
                 return None
+        if task.trace_svg and not Path(out_path).with_suffix(".svg").is_file():
+            return None
         slices = entry.get("slices") or {}
         if task.grid is not None:
             expected = set(task.grid.resolved_labels())
@@ -618,7 +634,8 @@ def _expand_entry(rt: dict, *, defaults: dict, blocks: dict, base_vars: dict,
         raw_svg = merged_base.get("svg")
         raw_svg_file = merged_base.get("svg_file")
         has_render_src = any(x is not None for x in (raw_html, raw_html_file, raw_svg, raw_svg_file))
-        kind = str(merged_base.get("kind") or (KIND_RENDER if has_render_src else KIND_GENERATE))
+        default_kind = KIND_RENDER if has_render_src else KIND_GENERATE
+        kind = str(merged_base.get("kind") or default_kind)
         if kind not in KIND_CHOICES:
             raise DagError(f"task {tid!r} invalid kind {kind!r}; choose from {KIND_CHOICES}")
 
@@ -633,11 +650,15 @@ def _expand_entry(rt: dict, *, defaults: dict, blocks: dict, base_vars: dict,
         elif kind == KIND_RENDER:
             src_label = raw_svg_file or raw_html_file or ("inline svg" if raw_svg is not None else "inline html")
             prompt = f"[render] {src_label}"
+        elif kind == KIND_STITCH:
+            prompt = f"[stitch] {len(merged_base.get('refs') or ())} sections"
         else:
             raise DagError(f"task {tid!r} must specify 'prompt' or 'spec'")
 
         if kind == KIND_RENDER and not has_render_src:
             raise DagError(f"render task {tid!r} must specify one of html, html_file, svg, or svg_file")
+        if kind == KIND_STITCH and not (merged_base.get("refs") or ()):
+            raise DagError(f"stitch task {tid!r} must specify non-empty 'refs' to stitch")
 
         html_text = _render_str(str(raw_html), ctx) if raw_html is not None else None
         html_file = _resolve_template_file(_render_str(str(raw_html_file), ctx), dag_dir) if raw_html_file is not None else None
@@ -647,6 +668,10 @@ def _expand_entry(rt: dict, *, defaults: dict, blocks: dict, base_vars: dict,
         height = int(merged_base["height"]) if merged_base.get("height") is not None else None
         scale = float(merged_base["scale"]) if merged_base.get("scale") is not None else 2.0
         pdf = bool(merged_base.get("pdf", False))
+        trace_svg = bool(merged_base.get("trace_svg", False))
+        trace_colors = int(merged_base.get("trace_colors", 4))
+        stitch_direction = str(merged_base.get("stitch_direction", "vertical"))
+        stitch_gap = int(merged_base.get("stitch_gap", 0))
 
         raw_refs = merged_base.get("refs") or ()
         refs = tuple(_render_str(str(r), ctx) for r in raw_refs)
@@ -711,6 +736,10 @@ def _expand_entry(rt: dict, *, defaults: dict, blocks: dict, base_vars: dict,
             height=height,
             scale=scale,
             pdf=pdf,
+            trace_svg=trace_svg,
+            trace_colors=trace_colors,
+            stitch_direction=stitch_direction,
+            stitch_gap=stitch_gap,
         ))
     return out
 

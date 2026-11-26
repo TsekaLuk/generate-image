@@ -1,48 +1,47 @@
-# Playbook: Deliverable-Grade Brand VI Systems (Hybrid Vector + Editorial + AI)
+# Playbook: Commercial-Grade Brand VI Systems (Meta-Cognitive Hybrid Pipeline)
 
-> **Core Truth:** Pure end-to-end diffusion **cannot** deliver a real Brand VI system on its own. Diffusion models hallucinate different fonts on every asset (Font Drift), fake mathematical construction grids, omit Pantone/CMYK specs, and collapse real-world business cards/posters/passes into empty "Logo Slapping" mockups.
-> **The Production Formula:** **Deterministic Vector & Typography (`kind: render`, SVG + HTML/CSS via headless Chromium)** locks the mathematical identity, custom CJK/Latin logotype, supergraphic, VI manual specs, and real print/UI artwork — while **AI Diffusion (`kind: generate`)** produces bespoke fine-art photography and stages tactile real-world editorial scenes **directly from the finished flat artwork**!
+> **Meta-Cognitive Principle (Read First):**
+> **Engineering Compliance ≠ Commercial Design Excellence.** Zero typos, zero drift, clean grids, and valid Pantone codes only take a brand identity from **0 → 60 points**. What makes a client actually pay — and lets work stand beside Behance Featured, 站酷首页, Brand New, Pentagram, or Batoer — is **style-agnostic commercial craftsmanship**:
+> 1. **Right Tool for Each Cognitive Layer:**
+>    - **NEVER** hand-code primitive SVG `<rect>` shapes as a brand's signature logo mark, and **NEVER** type raw OS system fonts (`Songti SC` / `PingFang`) as a bespoke brand logotype!
+>    - Use **AI multi-direction visual exploration (`grid: 2x3` / `3x3`, `gpt-image-2.6-sunburst`)** to achieve genuine sculptural originality, custom hand-lettered CJK/Latin typography, and iconic brand symbols/IPs.
+>    - Immediately **vectorize winning flat marks & handcrafted logotypes** via **`trace_svg: true`** (`potrace` / `vtracer` → smooth multi-color Bezier `.svg`) and isolate **clean RGBA cutouts (`--background transparent`)** for downstream editorial composition.
+> 2. **Never Overfit to Reference Styles — Calibrate to Universal Quality Invariants:**
+>    - Every industry deserves its own authentic aesthetic (quiet poetry, brutalist typography, neo-pop 3D IP, high-fashion editorial). Judge quality by **universal invariants**: *silhouette memorability, handcrafted typographic originality, macro/micro scale tension, living ecosystem richness, and narrative showcase pacing*.
+> 3. **Adversarial "3-Second Studio Portfolio Swap Test":**
+>    - Before accepting ANY creative anchor or final showcase, name its **top 3 weaknesses** compared to a top working studio's portfolio. If a Design Director would clock it as "AI mockup slop" or "rigid programmer PPT" within 3 seconds → **HARD REJECT and iterate!**
 
 ---
 
-## 1. The 5-Layer Brand VI Architecture (Zero Logo-Slapping)
+## The 5-Stage Production Brand VI Pipeline (`generate-image` v3.2)
 
-Never jump straight from a company name to slapping a generic geometric icon onto mockups. Build all 5 layers in a single hybrid DAG:
+### Stage 1 · High-Ceiling Creative Exploration Boards (`kind: generate`, `grid: 2x3`)
+Do NOT settle for 1 timid guess. Run two dedicated exploration boards first:
+- **Board A — Brand Mark & Custom Handcrafted Logotype (`grid: 2x3`, `gpt-image-2.6-sunburst`):**
+  Explore 6 genuinely distinct, high-concept commercial directions: e.g., (1) custom sculpted Chinese character architecture where the brand name itself IS the logo, (2) iconic negative-space animal/cultural totem, (3) modernist seal/monogram with bespoke calligraphy tension, (4) kinetic optical aperture / geometric sculpture, (5) avant-garde typographic ligature, (6) iconic minimal silhouette.
+- **Board B (when brand benefits from a character/totem/super-symbol) — Signature Brand Icon / 3D Tactile Mascot or Cultural Object (`grid: 2x3`):**
+  Explore 6 memorable sculptural silhouettes with unmistakable personality and silhouette recognition (never generic stock spheres or clichés).
+- **[HARD VISUAL GATE #1]:** Inspect every cell at full resolution. Apply the **3-Second Portfolio Swap Test**. If ALL 6 cells look generic or weak, refine the conceptual angle and regenerate the board BEFORE proceeding!
 
-### Layer 1 · Brand Strategy & Cultural DNA (Before Any Drawing)
-Define explicitly before writing a single SVG path or prompt:
-- **Brand Etymology & Core Metaphor:** What makes this brand's *name* and *sector* uncopyable? (e.g., a cultural & cinema media house needs humanistic storytelling, calligraphic/editorial tension, and optical light — NOT cold real-estate stone or generic 3-polygon shapes that fail trademark registration!)
-- **Trademark Distinctiveness Bar:** Ask honestly — *"If you hide the company name, can a designer tell this isn't a bookstore, elevator company, or generic geometric template?"*
-- **Role of Every Palette Color (60-30-10 + Production Codes):** Every brand color MUST carry real **HEX + RGB + CMYK + Pantone** specifications, AND every defined accent color must actually earn its place across the touchpoints.
+### Stage 2 · Lock, Refine, Vectorize & Isolate (`trace_svg: true` + Leaf RGBA Cutout)
+- **Opaque Canonical Masters (`ratio: 1:1` / `16:9`, `background: opaque`, `trace_svg: true`):**
+  Refine the winning graphic mark AND winning handcrafted custom logotype to razor-sharp flat perfection on solid pure white (`#FFFFFF`). `trace_svg: true` automatically exports smooth multi-color Bezier **`.svg` vector masters** alongside the `.png`!
+- **Transparent RGBA Cutouts (`background: transparent`, LEAF nodes — NEVER feed RGBA as `--ref`!):**
+  Generate crisp transparent PNG cutouts of the locked mark, custom logotype, and sculptural IP/super-symbol so Stage 5's editorial layout can layer them **breaking across section frames and huge display typography**!
 
-### Layer 2 · Deterministic Vector Core & Multi-Page VI Manual (`kind: render`, ¥0)
-Generate mathematically exact vector masters and locked typographic combinations:
-1. **Master Emblem (`svg_file`):** Exports BOTH standalone **`.svg` vector master** (print/trademark-ready) AND crisp high-DPI **`.png`** (opaque solid white master + transparent RGBA leaf).
-2. **Locked Primary & Secondary Logotypes (`svg_file` / `html_file`):**
-   - Lock the exact **Custom CJK Logotype + Latin Wordmark** proportions, optical baseline alignment, weight contrast, and letter-spacing in **Horizontal Lockup**, **Vertical Lockup**, and **Dark-Mode Inversion**.
-   - **Rule:** NEVER let downstream diffusion re-invent Chinese or English fonts from text prompts alone!
-3. **Auxiliary Visual System (Supergraphic / Dynamic Frame):**
-   - Derive a distinctive graphic motif (e.g., anamorphic frame marks, seal-stamp index coordinates, optical slit rhythm, editorial grid bars) so the brand remains unmistakably recognizable **even when the logo is hidden**.
-4. **True Multi-Page VI Guidelines Manual (4–6 Dedicated Sheets + Print PDF):**
-   - **Sheet 01 · Mark Construction Grid:** True unit square `a` / `x` coordinate grid, exact proportional callouts (`12a × 12a`, angles, radii), Clearspace (`≥ 2a`), and Minimum Sizes (`Print ≥ 12mm / Digital ≥ 28px`).
-   - **Sheet 02 · Lockup Matrix & Misuse (Don'ts):** Horizontal, vertical, monochrome, dark inversion + 4–6 concrete visual Don'ts (no stretching, no recoloring, no drop-shadows, no low-contrast crowding).
-   - **Sheet 03 · Color & Typography System:** Primary + Secondary + Accent swatches with **Pantone / CMYK / RGB / HEX** + proportional bar + real CJK/Latin font specimen (`H1 / H2 / Body / Caption / Metadata`).
-   - **Sheet 04 · Supergraphic & Editorial Grid Grammar:** How the auxiliary graphics divide posters, book covers, passes, and screens.
+### Stage 3 · Living Brand Ecosystem Expansion (`kind: generate`, Star Topology from Opaque Anchors)
+Move far beyond "boring office stationery" (cards + lobby + book). Build a **living, commercially rich brand universe** tailored to the client's actual industry:
+- **Design Process & Motion/Expression Sheet (`grid: 3x3` or `4x4`):** Black-and-white expressive concept sketch / motion script / graphic motif matrix (proves design rigor & system extensibility).
+- **Merch, Die-Cut Stickers & Collectible Objects:** Die-cut sticker pack wall, collector's acrylic display sculpture / vinyl art toy / physical artifact, curated packaging & tote bag family shot.
+- **Editorial Key Visuals & Campaign Scenes:** 2–3 high-emotion campaign scenes / 3D art-directed environments / fine-art cinema stills (tailored to brand DNA, ZERO garbled micro-text).
+- **Real-World Spatial & Digital Contexts:** Tactile print collateral, exhibition/pop-up installation or restrained architectural signage (14%–22% wall width), and authentic digital product / UI ecosystem.
 
-### Layer 3 · Bespoke AI Fine-Art Key Visuals (`kind: generate`, ZERO AI Text!)
-Use `gpt-image-2.6-sunburst` exclusively where diffusion excels:
-- Generate 2–3 signature brand imagery assets (cinema still, poetic architectural light/shadow study, cultural portrait / tactile paper-and-ink still life) with **ZERO baked-in text or logos**.
-- Match the brand's actual emotional temperature (human warmth, poetic film grain, editorial authenticity — NOT sterile 3D renders).
+### Stage 4 · Production Print & UI Flat Artwork (`kind: render`, ¥0)
+Composite the **vectorized/isolated AI-crafted mark + handcrafted custom logotype** (NOT raw system fonts!) with crisp body/metadata typography, real contact info, real exhibition/product schedules, barcodes/QR codes, and Pantone/CMYK/RGB/HEX production specs. Stage key physical mockups directly from these finished flat artworks (`background: opaque`) when photographic realism is required.
 
-### Layer 4 · Real Print & Digital Flat Artwork (`kind: render`, Compositing Vector + Real Copy + AI Photography)
-Combine Layer 2 vectors + Layer 3 photography via `{{refs.<kv_id>}}` inside deterministic HTML/CSS templates to produce **genuinely usable, print/dev-ready flat artwork** with authentic information hierarchy:
-- **Business Card (Front + Back):** Real 90×54mm layout with contact name, title, phone, email, studio address, website, subtle QR code, and locked lockup.
-- **Exhibition / Screening Poster:** Real event title, bilingual subtitle, dates, venue, curatorial/production credits, supergraphic frame + bespoke Layer 3 AI key visual.
-- **Festival / Media Credential Pass:** Real portrait/badge layout, pass holder name, role, credential ID (`YZ-2026-0418`), access zones (`SCREENING / PRESS / LOUNGE`), dates, and crisp vector barcode.
-- **Annual Monograph / Book Cover:** Volume/issue number (`VOL.01 / 2026`), thematic title, bilingual editorial metadata, spine/cover wrap rhythm, locked lockup + supergraphic.
-- **Digital Editorial Website + Mobile Screen:** Real navigation bar (`FILMS · EXHIBITIONS · ARCHIVE · JOURNAL · ABOUT`), featured screening hero with director/year/runtime metadata, interactive index, and mobile launch/editorial screen.
-
-### Layer 5 · Tactile Physical Scene Staging (`kind: generate`, Referencing Complete Flat Artwork!)
-- **Flat-First Staging Rule:** Feed the **finished Layer 4 flat artwork** (`refs: ["@03_business_card_flat"]`, `["@04_poster_flat"]`, etc.) into `gpt-image-2.6-sunburst` with **`background: "opaque"`**. Now the physical photograph preserves the **exact locked typography, exact layout grid, exact supergraphic, and realistic information density** while adding authentic paper fibers, letterpress deboss, brushed metal speculars, sunlit plaster shadows, and natural editorial atmosphere!
-- **Architectural Scale Restraint (Signage Rule):** For HQ lobby / facade / gallery signage, keep the mounted lockup refined and human-scaled (**14%–22% of wall width**, generous architectural breathing space around it — NEVER a giant 40% real-estate billboard!).
-- **Strict Visual QA on Every Staged Scene:** Compare every staged scene side-by-side against its Layer 4 flat artwork at full resolution (`read_file`). Reject immediately if any Chinese glyph garbles, logo geometry shifts, or staging looks like generic AI mockup slop.
+### Stage 5 · Behance / 站酷 Long-Scroll Case Study (`kind: render` sections → `kind: stitch`, ¥0)
+NEVER present a commercial VI as 4 sterile gray-bordered PPT slides! Assemble **8–10 full-bleed rhythmic vertical chapters** (`width: 1440px @2x`), then stitch them seamlessly via `kind: stitch` into ONE master **`CASE_STUDY_LONG_SCROLL.png`** (plus printable PDF):
+- **Rhythmic Visual Grammar:**
+  - Alternate full-bleed **Deep Obsidian / Pure White / High-Impact Brand Color** chapters for cinematic scroll momentum.
+  - Use **oversized edge-to-edge background display typography** (`140px–240px`) layered BEHIND crisp **RGBA transparent cutouts** that physically break section borders!
+  - Tell a persuasive commercial arc: **01 Hero Impact Cover → 02 Brand Thesis & Pain Points → 03 Mark & Handcrafted Logotype Craftsmanship → 04 Color, Typography & Supergraphic Rhythm → 05 Brand Symbol / IP & Sketch Derivation (`3×3` Motion/Icon Sheet) → 06 Packaging, Stickers & Collectible Merch → 07 Editorial Posters & Spatial Experience → 08 Digital Product & Campaign Scenes → 09 Closing Colophon**.

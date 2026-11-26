@@ -40,6 +40,7 @@ from . import flow
 from . import gallery
 from . import probe
 from . import render
+from . import trace
 from . import __version__ as PKG_VERSION
 from .providers import (
     EXTENDED_QUALITY_MODELS,
@@ -1562,6 +1563,12 @@ def _dry_run_plan(args) -> None:
                 json_tasks.append({"id": t.id, "kind": "render", "provider": "local",
                                    "model": "chromium-render", "stage": t.stage, "tags": t.tags})
                 continue
+            if t.kind == dag.KIND_STITCH:
+                extra = f" stage={t.stage}" if t.stage else ""
+                print(f"→   {t.id}: kind=stitch provider=local sections={len(t.refs)} dir={t.stitch_direction}{extra}", file=sys.stderr)
+                json_tasks.append({"id": t.id, "kind": "stitch", "provider": "local",
+                                   "model": "pillow-stitch", "stage": t.stage, "tags": t.tags})
+                continue
             provider = _resolve_task_provider(t, args, allow_unconfigured=True)
             prov = provider.name
             model = t.model or (provider.gif_models[0] if (t.gif and provider.gif_models) else provider.default_model)
@@ -1573,14 +1580,16 @@ def _dry_run_plan(args) -> None:
                 extra += f" grid={t.grid.rows}x{t.grid.cols}"
             if t.gif:
                 extra += " gif=true"
+            if t.trace_svg:
+                extra += f" trace_svg={t.trace_colors}c"
             print(f"→   {t.id}: provider={prov} model={model} ratio={ratio}{extra}", file=sys.stderr)
             json_tasks.append({"id": t.id, "provider": prov, "model": model,
                                "ratio": ratio, "stage": t.stage, "tags": t.tags})
             routed.append(prov)
         counts = Counter(routed)
-        render_n = sum(1 for t in tasks if t.kind == dag.KIND_RENDER)
-        print(f"→ images:   {len(tasks)}" + (f" ({render_n} local render, {len(routed)} AI)" if render_n else ""), file=sys.stderr)
-        cost_str = "¥0.00 (local render only)" if not counts else _cost_phrase(counts, quality=args.quality)
+        local_n = sum(1 for t in tasks if t.kind in (dag.KIND_RENDER, dag.KIND_STITCH))
+        print(f"→ images:   {len(tasks)}" + (f" ({local_n} local, {len(routed)} AI)" if local_n else ""), file=sys.stderr)
+        cost_str = "¥0.00 (local only)" if not counts else _cost_phrase(counts, quality=args.quality)
         print(f"→ cost:     {cost_str}", file=sys.stderr)
         if args.json:
             print(json.dumps({
@@ -1736,7 +1745,7 @@ def _run_dag_file(args, out_dir: Path) -> None:
     _load_dotenv()
 
     # Validate per-task provider/ratio up front (fail before any billed request).
-    gen_tasks = [t for t in tasks if t.kind != dag.KIND_RENDER]
+    gen_tasks = [t for t in tasks if t.kind == dag.KIND_GENERATE]
     for t in gen_tasks:
         if t.provider and t.provider != AUTO_PROVIDER and t.provider not in PROVIDERS:
             sys.exit(f"error: task {t.id!r} unknown provider {t.provider!r}; "
@@ -1802,6 +1811,13 @@ def _run_dag_file(args, out_dir: Path) -> None:
                 resolved_html = render.interpolate_refs(raw_html, refs, ref_map)
                 render.render_html_to_pdf(resolved_html, out_dir / f"{stem}.pdf", base_dir=base_dir)
             return png_bytes
+        if task.kind == dag.KIND_STITCH:
+            return board.stitch_images(
+                refs,
+                direction=task.stitch_direction,
+                target_width=task.width,
+                gap=task.stitch_gap,
+            )
         provider = task_providers[task.id]
         if task.gif:
             model = task.model or (provider.gif_models[0] if provider.gif_models else provider.default_model)
@@ -1876,6 +1892,9 @@ def _run_dag_file(args, out_dir: Path) -> None:
         if t.kind == dag.KIND_RENDER:
             prov_name = "local"
             model = "chromium-render"
+        elif t.kind == dag.KIND_STITCH:
+            prov_name = "local"
+            model = "pillow-stitch"
         else:
             provider = task_providers[t.id]
             prov_name = provider.name
@@ -1883,6 +1902,13 @@ def _run_dag_file(args, out_dir: Path) -> None:
         w = h = frames_n = 0
         if r.status in (dag.SUCCESS, dag.CACHED) and r.output_path:
             png = Path(r.output_path)
+            if t.trace_svg and r.status == dag.SUCCESS and png.is_file():
+                try:
+                    svg_out = png.with_suffix(".svg")
+                    trace.trace_image_to_svg(png, svg_out, max_colors=t.trace_colors)
+                    print(f"  ↳ vectorized -> {svg_out}", file=sys.stderr)
+                except trace.TraceError as exc:
+                    print(f"  ↳ warning: trace_svg failed for {t.id}: {exc}", file=sys.stderr)
             try:
                 raw = png.read_bytes()
             except OSError:
@@ -1897,7 +1923,7 @@ def _run_dag_file(args, out_dir: Path) -> None:
                                     stage=t.stage, tags=t.tags)
         is_ok = r.status in (dag.SUCCESS, dag.CACHED)
         item_json: dict = {"id": t.id, "ok": is_ok, "path": r.output_path, "error": r.error}
-        if t.kind == dag.KIND_RENDER and r.output_path:
+        if r.output_path:
             svg_p = Path(r.output_path).with_suffix(".svg")
             pdf_p = Path(r.output_path).with_suffix(".pdf")
             if svg_p.is_file():
@@ -1932,7 +1958,7 @@ def _run_dag_file(args, out_dir: Path) -> None:
     billed_counts = Counter(
         task_providers[t.id].name
         for t in tasks
-        if t.kind != dag.KIND_RENDER and results[t.id].status in (dag.SUCCESS, dag.FAILED)
+        if t.kind == dag.KIND_GENERATE and results[t.id].status in (dag.SUCCESS, dag.FAILED)
     )
     if billed_counts:
         print(f"→ spent: {_cost_phrase(billed_counts, quality=args.quality)}", file=sys.stderr)

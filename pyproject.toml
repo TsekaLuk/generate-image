@@ -18,6 +18,7 @@ generate-image-probe = "generate_image.probe:main"
 generate-image-doctor = "generate_image.doctor:main"
 generate-image-slice = "generate_image.board:main_slice"
 generate-image-gallery = "generate_image.gallery:main"
+generate-image-trace = "generate_image.trace:main_trace"
 
 [build-system]
 requires = ["hatchling"]

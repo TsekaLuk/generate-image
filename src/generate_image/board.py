@@ -265,6 +265,82 @@ def build_contact_sheet(items: list[dict], out_path: Path, *, cols: int = 4,
     return sheets
 
 
+def stitch_images(
+    image_paths: list[str | Path],
+    out_path: Path | None = None,
+    *,
+    direction: str = "vertical",
+    target_width: int | None = None,
+    gap: int = 0,
+    bg: tuple[int, int, int] = (20, 21, 24),
+) -> bytes:
+    """Seamlessly stitch modular sections into one Behance/Zcool long-scroll PNG.
+
+    Supports `direction='vertical'` (normalizes all sections to `target_width`
+    or the max section width, preserving aspect ratio) and `direction='horizontal'`.
+    Returns PNG bytes and writes to `out_path` if provided.
+    """
+    if not image_paths:
+        raise ValueError("stitch_images requires at least one image path")
+    if direction not in ("vertical", "horizontal"):
+        raise ValueError(f"direction must be 'vertical' or 'horizontal', got {direction!r}")
+
+    import io
+    opened: list[Image.Image] = []
+    try:
+        for p in image_paths:
+            with Image.open(Path(p).expanduser()) as raw:
+                if raw.mode == "RGBA":
+                    flat = Image.new("RGB", raw.size, bg)
+                    flat.paste(raw, mask=raw.getchannel("A"))
+                    opened.append(flat)
+                else:
+                    opened.append(raw.convert("RGB"))
+
+        if direction == "vertical":
+            w = target_width or max(im.width for im in opened)
+            scaled: list[Image.Image] = []
+            for im in opened:
+                if im.width != w:
+                    nh = max(1, round(im.height * (w / im.width)))
+                    scaled.append(im.resize((w, nh), Image.Resampling.LANCZOS))
+                else:
+                    scaled.append(im)
+            total_h = sum(im.height for im in scaled) + gap * max(0, len(scaled) - 1)
+            canvas = Image.new("RGB", (w, total_h), bg)
+            y = 0
+            for im in scaled:
+                canvas.paste(im, (0, y))
+                y += im.height + gap
+        else:
+            h = max(im.height for im in opened)
+            scaled = []
+            for im in opened:
+                if im.height != h:
+                    nw = max(1, round(im.width * (h / im.height)))
+                    scaled.append(im.resize((nw, h), Image.Resampling.LANCZOS))
+                else:
+                    scaled.append(im)
+            total_w = sum(im.width for im in scaled) + gap * max(0, len(scaled) - 1)
+            canvas = Image.new("RGB", (total_w, h), bg)
+            x = 0
+            for im in scaled:
+                canvas.paste(im, (x, 0))
+                x += im.width + gap
+
+        buf = io.BytesIO()
+        canvas.save(buf, format="PNG")
+        data = buf.getvalue()
+        if out_path is not None:
+            op = Path(out_path)
+            op.parent.mkdir(parents=True, exist_ok=True)
+            op.write_bytes(data)
+        return data
+    finally:
+        for im in opened:
+            im.close()
+
+
 def main_slice(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(
         prog="generate-image-slice",
