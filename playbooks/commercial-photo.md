@@ -13,15 +13,14 @@ Capture before compiling:
   - Packshot / jewelry / cosmetics: `100mm macro lens at f/8–f/11, tack-sharp edge-to-edge product focus, medium-format studio capture`
   - Hero editorial with bokeh: `85mm prime lens at f/2.8, crisp focus on product logo/texture, smooth natural background falloff`
   - Flat-lay / catalog grid: `overhead 90-degree orthographic flat-lay, 50mm lens, zero perspective distortion`
-- **Studio Lighting Modifiers (never just "good lighting"):**
-  - `large diffused overhead softbox at 45°` (clean gradient specular roll-off)
-  - `vertical strip-box rim lighting tracing glass/metal edges`
-  - `subtle white bounce-card fill lifting shadow side`
+- **Lighting Physics (Single-Source Realism Over "AI Glow"):**
+  - Prefer **single-source natural directional lighting** (`late-afternoon architectural window raking light`, `diffused overcast north skylight`, `soft natural fall-off with deep ambient occlusion in crevices`, `subtle environmental color bounce off matte stone/wood`) — NEVER omnidirectional flat studio glare or neon edge glow!
   - `soft grounded contact shadow directly beneath the base` (prevents "floating pasted object" look)
-- **Color Harmony (60-30-10):**
-  - 60% low-saturation architectural surface (warm travertine stone, raw matte concrete, soft linen)
-  - 30% product body & tonal props
-  - 10% high-chroma accent or specular highlight
+  - **Tactile Physical Friction & Micro-Imperfections:** Explicitly describe uncoated paper fiber tooth, soft ink soak into textured stock, natural textile weave, subtle matte metal micro-patina, and off-axis editorial cropping (objects bleeding naturally past frame edges or held by a human hand) — ban waxy CGI perfection and dead-center Canva catalog symmetry!
+- **Editorial Pigment Harmony (60-30-10):**
+  - 60% low-saturation architectural/organic surface (unbleached cotton, honed limestone, raw plaster, muted warm concrete)
+  - 30% product body & restrained tonal context
+  - 10% nuanced mineral/ink pigment accent (pull back from harsh max-saturation digital RGB primaries `#0047FF`/`#FF0000` and backlit glow)
 
 ## 3. Six-Layer Prompt Blueprint
 1. **Deliverable & Hero Subject:** Exact product geometry, proportion, and per-part surface finish (`matte`, `brushed`, `satin`, `micro-textured`, `subsurface translucent`).

@@ -36,9 +36,15 @@ Brand recognition (Jenni Romaniuk: **Fame × Uniqueness**) must **never have a s
 - Give every artifact **real information density and functional purpose** (real copy, UI, metadata, specs, editorial rhythm) — never hollow placeholder shells that only dare to stamp a company name.
 - When an entity spans contrasting contexts (e.g., institutional/partner rigor *and* expressive public/product surfaces), explicitly define **which Constants stay locked** vs. **which Variables flex**.
 
-### C. Multi-Hop Cross-Referencing DAG Orchestration (`A → B(A) → C(A,B) → D(A..C) → Book/Hub`)
-- Go beyond flat `1 → N` star fan-out whenever building a comprehensive brand world: compose **multi-hop converging DAGs** where upstream anchors (`A`: symbol, wordmark) feed mid-tier system masters (`B`: optical motif, CMF material board, lockups), which jointly cross-reference into downstream hardware/spatial/editorial/campaign nodes (`C, D`: e.g. `refs: ["@A1", "@A2", "@B2", "@B3"]`), and finally converge into **book-scale deterministic PDF spreads (`kind: render`, `pdf: true`)**, **interactive Web Brand Hubs**, and **long-scroll showcases (`kind: stitch`)** that cross-reference 10–25+ upstream assets simultaneously.
-- Every upstream hash change cascades cleanly through `--resume` content-hash invalidation, guaranteeing zero stale drift across multi-hop descendants.
+### C. Aesthetic & Editorial Art-Direction Discipline (60 → 100 Taste Bar)
+Technical accuracy and rich modular scope only reach **60/100**. Crossing into genuine agency/monograph-grade taste requires five strict art-direction rules:
+1. **Delivery Purity & The Law of Invisible Criteria (Zero Theater, Zero Process Leakage):**
+   - **NEVER turn a quality standard into an explicit deliverable chapter, module, or proof page:** Evaluation lenses (*Element-Removal / grayscale ablation*, *anti-blanding*, *color harmony*, *multi-hop consistency*) are **private internal standards** used to critique, reject, and iterate weak work — NEVER a client-facing "Ablation Proof (PASS)" page, "Anti-Blanding Audit" slide, or "DAG Graph" chapter inside a brand book. Let the raw craft embody the bar silently; never performatively prove workload.
+   - **NEVER leak rejected drafts or pipeline telemetry:** Zero rejected exploration boards/candidates and zero internal labels (`MULTI-HOP NODE`, `REFS: [...]`, `DETERMINISTIC COMPOSITE`, `STAGE 1`) anywhere inside client books, spreads, or photographs.
+2. **Editorial Pacing & Whitespace (*Emil Ruder / Kenya Hara*):** Visual richness means **depth of atmospheric visual moments**, NEVER stuffing pages with 8–10px micro-text, tables, and boxed KPI widgets. Hold **40–60% active whitespace**, enforce comfortable body readability (**≥ 13–15pt**, ≤ 3–4 calm lines per block), alternate spread tempos (silent full-bleed plates → calm typographic breathers → airy single-rule specs → tactile macro close-ups), and **NEVER double-nest rendered screenshots** inside bordered book pages.
+3. **Editorial Pigment & Light Absorption (*Fedrigoni / Takeo*):** Avoid raw max-saturation digital RGB primaries (`#0047FF`, `#FF0000`) and glowing neon rims on dark surfaces. Use nuanced ink/mineral pigments with shared undertones and physical light absorption (uncoated paper tooth, matte micro-grain, soft ink soak) over backlit CGI sheen.
+4. **Art-Directed Photography & Mockup Realism (*Pentagram / Koto / Collins / Mouthwash*):** Ban fake "AI glow", waxy CGI surfaces, sterile centered Canva flat-lay grids, and 2×2 3D shader cubes. Shoot mockups with **single-source natural directional light** (window light, overcast skylight, real ambient occlusion), **prime-lens shallow depth of field** (`50mm/85mm f/2.0–2.8`), off-axis framing/edge-bleed crops, and **tactile physical friction** (paper fibers, subtle creases, human hands, lived-in architectural context).
+5. **Aesthetic Multi-Hop DAG Cross-Referencing (`A → B → C → D`):** Go beyond flat `1 → N` fan-out by binding **orthogonal visual roles** across multi-parent refs (`Geometry` + `Lighting/Tonal Grade` + `Substrate Grain` + `Spatial World`) so every downstream scene stays **sparse, breathing, and single-subject** while sharing unmistakable brand DNA — NEVER use multi-parent refs to cram 5–7 objects onto one crowded tabletop. Every upstream hash change still cascades cleanly through `--resume` content-hash invalidation.
 
 ---
 
@@ -66,12 +72,12 @@ Audit every key deliverable at full resolution across two strictly separate laye
 
 ### Layer B · Meta-Cognitive Stress Test & D&AD Craft Bar (Deliverable Bar, 60 → 100)
 
-1. **The "Element-Removal" ("Smash Your Brand") Diagnostic Test:**
-   Systematically ablate elements one by one to expose fragile, single-crutch identities:
+1. **The "Element-Removal" ("Smash Your Brand") Private Diagnostic Test:**
+   During your **private visual audit** (NEVER rendered as a client-facing proof chapter or "PASS" badge!), mentally ablate elements one by one to expose fragile, single-crutch identities:
    - **Ablation 1 · Strip the Logo & Brand Name:** Cover every logo and brand name — do the typographic voice, grid grammar, graphic motif, and spatial rhythm still uniquely attribute the work to *this* brand?
    - **Ablation 2 · Strip Any Mascot / Hero Visual:** If a character, 3D figure, or hero illustration exists, remove it — does the underlying typographic and structural system still stand with unmistakable identity?
    - **Ablation 3 · Strip Color (Grayscale / Monochrome):** Desaturate the entire system to black-and-white — do silhouette, contrast hierarchy, negative space, stroke tension, and spatial architecture still hold distinctive recognition?
-   > *Discipline note:* Passing these ablations is a **diagnostic means (手段), NOT an end in itself (目的)**. Never force gimmicks just to "pass a checklist" — use ablation strictly to verify that brand distinctiveness is structurally woven across Constants on the way to an industry-benchmark identity.
+   > *Discipline note:* Passing these ablations is a **private diagnostic means (内部评判手段), NOT a client deliverable module or final goal**. If an asset fails privately, silently redesign and regenerate it — never bolt an "Ablation Proof" page onto the deliverable to prove effort.
 
 2. **D&AD Three-Pillar Benchmark Gate:**
    - **Inspiring & Ownable Idea:** Does it subvert safe category blanding with zero transplanted tropes from unrelated references or examples?
