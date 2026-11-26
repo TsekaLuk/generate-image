@@ -41,6 +41,8 @@ from . import __version__ as PKG_VERSION
 from .providers import (
     EXTENDED_QUALITY_MODELS,
     EXTENDED_QUALITY_TIERS,
+    GIF_FRAME_COUNT_RANGE,
+    GIF_FRAME_MS_RANGE,
     VALID_QUALITY_TIERS,
     PROVIDERS,
     AUTO_PROVIDER,
@@ -48,6 +50,7 @@ from .providers import (
     IMAGE_CONFIG_SIZES,
     Provider,
     _override_prefix,
+    apply_gif_dialect,
     apply_model_dialect,
     endpoint_unset,
     resolve_provider,
@@ -210,6 +213,10 @@ def _post(client: httpx.Client, url: str, key: str, provider: Provider, *,
                     f" `generate-image-models` to see the registry, and set"
                     f" {_override_prefix(provider)}_DEFAULT_MODEL=<a model your"
                     f" account has> to change the default without editing code")
+        elif resp.status_code == 400 and "gif output is not enabled" in resp.text.lower():
+            hint = (" — the upstream account is not entitled to GIF output yet"
+                    " (OpenAI gates GIF per account). The request itself is"
+                    " well-formed; still images on this provider are unaffected")
         raise ProviderError(
             f"{provider.name} HTTP {resp.status_code}: {resp.text[:500]}{hint}",
             retryable=retryable, retry_after=ra, status=resp.status_code,
@@ -349,7 +356,7 @@ def _guard_quality(provider: Provider, model: str, quality: str | None) -> None:
         )
     if quality in EXTENDED_QUALITY_TIERS and model not in EXTENDED_QUALITY_MODELS:
         raise ProviderError(
-            f"quality={quality!r} only exists on GPT Image 2.5 models; {model!r} "
+            f"quality={quality!r} only exists on GPT Image 2.5 / 2.6 models; {model!r} "
             f"accepts it without error and ignores it (measured). Pick one of "
             f"{', '.join(sorted(EXTENDED_QUALITY_MODELS))}, or use a tier up to 'high'",
             retryable=False,
@@ -361,6 +368,17 @@ def _guard_background(provider: Provider, model: str, background: str | None) ->
         raise ProviderError(
             f"background={background!r} is not supported on {provider.name} model {model!r} "
             f"(omit --background or pick a provider/model that supports it)",
+            retryable=False,
+        )
+
+
+def _guard_gif(provider: Provider, gif: dict | None, dialect_ok: bool) -> None:
+    """Refuse a GIF request on a dialect that has no GIF fields."""
+    if gif is not None and not dialect_ok:
+        raise ProviderError(
+            f"{provider.name} cannot send a GIF request on its "
+            f"{provider.gen_style}/{provider.edit_style} dialect; GIF output exists "
+            f"only on the Image API (/v1/images/generations, /v1/images/edits)",
             retryable=False,
         )
 
@@ -393,10 +411,15 @@ def _ark_supports_sequence(model: str) -> bool:
 def provider_generate(provider: Provider, prompt: str, model: str, ratio: str,
                       key: str, client: httpx.Client, *,
                       background: str | None = None, idem_key: str | None = None,
-                      seed: int | None = None, quality: str | None = None) -> bytes:
-    """Text-to-image via the provider's generation endpoint."""
+                      seed: int | None = None, quality: str | None = None,
+                      gif: dict | None = None) -> bytes:
+    """Text-to-image via the provider's generation endpoint.
+
+    `gif` (see _gif_options) turns the request into an animated GIF; None = still.
+    """
     _guard_background(provider, model, background)
     _guard_quality(provider, model, quality)
+    _guard_gif(provider, gif, provider.gen_style == "openai")
     if provider.gen_style == "ark":
         body: dict = {
             "model": model,
@@ -445,6 +468,9 @@ def provider_generate(provider: Provider, prompt: str, model: str, ratio: str,
     # --count/batch/dag don't spam N identical warnings.
     if seed is not None and provider.supports_seed:
         body["seed"] = seed
+    if gif is not None:
+        body["output_format"] = "gif"
+        body.update(gif)
     url = provider.base_url + provider.gen_path
     resp = _post(client, url, key, provider, json_body=body, idem_key=idem_key)
     return extract_image_bytes(_parse_json(resp, provider), client, provider_name=provider.name)
@@ -509,7 +535,7 @@ def _read_refs(refs: list[str], client: httpx.Client) -> list[tuple[bytes, str, 
 def provider_edit(provider: Provider, prompt: str, model: str, refs: list[str],
                   ratio: str, key: str, client: httpx.Client, *,
                   background: str | None = None, idem_key: str | None = None,
-                  quality: str | None = None) -> bytes:
+                  quality: str | None = None, gif: dict | None = None) -> bytes:
     """Image-to-image (垫图), dispatched by the provider's edit_style."""
     if provider.edit_path is None or provider.edit_style is None:
         raise ProviderError(
@@ -518,6 +544,7 @@ def provider_edit(provider: Provider, prompt: str, model: str, refs: list[str],
             retryable=False,
         )
     _guard_background(provider, model, background)
+    _guard_gif(provider, gif, provider.edit_style == "multipart")
     if not refs:
         raise ProviderError(f"{provider.name} edit requires at least one --ref", retryable=False)
     if len(refs) > provider.max_ref_images:
@@ -530,7 +557,7 @@ def provider_edit(provider: Provider, prompt: str, model: str, refs: list[str],
     style = provider.edit_style
     if style == "multipart":
         return _edit_multipart(provider, prompt, model, refs, ratio, key, client,
-                               background, idem_key)
+                               background, idem_key, gif)
     if style == "chat_image":
         return _edit_chat_image(provider, prompt, model, refs, key, client, idem_key)
     if style == "chat_image_config":
@@ -605,7 +632,7 @@ def _sensenova_output_fields(provider: Provider, ratio: str) -> dict:
     return fields
 
 def _edit_multipart(provider, prompt, model, refs, ratio, key, client, background,
-                    idem_key) -> bytes:
+                    idem_key, gif: dict | None = None) -> bytes:
     resolved = _read_refs(refs, client)
     if len(resolved) == 1:
         data, mime, fname = resolved[0]
@@ -622,6 +649,9 @@ def _edit_multipart(provider, prompt, model, refs, ratio, key, client, backgroun
             form["size"] = size
     if background:
         form["background"] = background
+    if gif is not None:
+        form["output_format"] = "gif"
+        form.update({k: str(v) for k, v in gif.items()})  # form fields are strings
     url = provider.base_url + provider.edit_path
     resp = _post(client, url, key, provider, files=files, data=form, idem_key=idem_key)
     return extract_image_bytes(_parse_json(resp, provider), client, provider_name=provider.name)
@@ -1000,10 +1030,18 @@ def _reveal(paths: list[Path]) -> None:
             pass
 
 
+def _animation_fields(raw: bytes) -> dict:
+    """Measured animation facts for a GIF payload ({} for a still image)."""
+    delays = probe.gif_frames(raw)
+    if not delays:
+        return {}
+    return {"format": "gif", "frames": len(delays), "frame_ms": delays}
+
+
 def _write_metadata(png_path: Path, raw: bytes, *, prompt: str, provider: str,
                     model: str, ratio: str, background: str | None,
                     refs: list[str], quality: str | None = None) -> None:
-    """Write a <name>.json sidecar next to a generated PNG (opt out via --no-metadata).
+    """Write a <name>.json sidecar next to a generated image (opt out via --no-metadata).
 
     Dimensions are decoded from the exact bytes that were written, via
     probe.image_dims (reused, no re-implementation)."""
@@ -1021,6 +1059,7 @@ def _write_metadata(png_path: Path, raw: bytes, *, prompt: str, provider: str,
         "width": w,
         "height": h,
         "created": datetime.now().isoformat(),
+        **_animation_fields(raw),
         "version": PKG_VERSION,
     }
     png_path.with_suffix(".json").write_text(
@@ -1055,6 +1094,7 @@ def _resolve_provider_for_args(args, *, allow_unconfigured: bool = False) -> Pro
                 background=args.background,
                 seed=args.seed,
                 quality=args.quality,
+                gif=args.gif,
                 allow_unconfigured=allow_unconfigured,
             )
         except ValueError as exc:
@@ -1092,6 +1132,58 @@ def _warn_seed_unsupported(provider: Provider) -> None:
     """Emit the one-time '--seed ignored' warning for a provider that lacks seed
     support. Callers invoke this ONCE per run (not per image/task)."""
     print(f"→ warning: --seed ignored on {provider.name} (unsupported)", file=sys.stderr)
+
+
+def _validate_gif_args(args) -> None:
+    """Reject GIF flag combinations before any key lookup or request."""
+    if not args.gif:
+        if args.frames is not None or args.frame_ms is not None:
+            sys.exit("error: --frames/--frame-ms only apply to GIF output; add --gif")
+        return
+    if args.batch_file or args.dag_file or args.flow_file or args.sequential \
+            or args.count != 1:
+        sys.exit("error: --gif makes one animation per run (not with --count/"
+                 "--batch-file/--dag-file/--flow-file/--sequential)")
+    lo, hi = GIF_FRAME_COUNT_RANGE
+    if args.frames is not None and not lo <= args.frames <= hi:
+        sys.exit(f"error: --frames must be between {lo} and {hi}")
+    lo, hi = GIF_FRAME_MS_RANGE
+    if args.frame_ms is not None and not lo <= args.frame_ms <= hi:
+        sys.exit(f"error: --frame-ms must be between {lo} and {hi}")
+
+
+def _gif_options(args) -> dict | None:
+    if not args.gif:
+        return None
+    opts: dict = {}
+    if args.frames is not None:
+        opts["frame_count"] = args.frames
+    if args.frame_ms is not None:
+        opts["frame_duration_ms"] = args.frame_ms
+    return opts
+
+
+def _specialize(provider: Provider, args) -> tuple[Provider, str]:
+    """Resolve the model and apply model + GIF dialects for a single-prompt run."""
+    if args.gif:
+        if not provider.gif_models:
+            capable = sorted(n for n, p in PROVIDERS.items() if p.gif_models)
+            sys.exit(f"error: {provider.name} cannot produce GIF output; "
+                     f"providers with GIF: {', '.join(capable)}")
+        model = args.model or provider.gif_models[0]
+        if model not in provider.gif_models:
+            sys.exit(f"error: --gif on {provider.name} needs one of "
+                     f"{', '.join(provider.gif_models)}; {model!r} makes stills only")
+    else:
+        model = args.model or provider.default_model
+    provider = apply_model_dialect(provider, model)
+    if args.gif:
+        provider = apply_gif_dialect(provider)
+    return provider, model
+
+
+def _gif_cost_phrase(n: int) -> str:
+    return f"not measured for GIF output ({n} billed call(s))"
 
 
 def parse_args() -> argparse.Namespace:
@@ -1137,7 +1229,7 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--quality", choices=list(VALID_QUALITY_TIERS), default=None,
                     help="gpt-image quality tier. Omit to use the server default "
                          "(nothing is sent). 'xhigh'/'max' exist only on GPT Image "
-                         "2.5. COSTS SCALE STEEPLY: measured, 'max' bills ~36x 'low' "
+                         "2.5 / 2.6. COSTS SCALE STEEPLY: measured, 'max' bills ~36x 'low' "
                          "per image — a run whose estimate exceeds "
                          f"¥{COST_CONFIRM_THRESHOLD_CNY:g} is refused unless you pass "
                          "--yes-costs with a ceiling you accept.")
@@ -1146,6 +1238,19 @@ def parse_args() -> argparse.Namespace:
                          "Required once a quality tier pushes the estimate over "
                          f"¥{COST_CONFIRM_THRESHOLD_CNY:g}, or when the cost of a "
                          "high tier cannot be estimated at all.")
+    ap.add_argument("--gif", action="store_true",
+                    help="animated GIF instead of a still (GPT Image 2.6, OpenAI Image "
+                         "API). Without -m it uses the provider's first GIF model "
+                         "(openai/302ai: gpt-image-2.6-flare). Describe the motion and "
+                         "the loop in the prompt; --ref images guide the animation. "
+                         "One animation per run (no --count/--batch-file).")
+    ap.add_argument("--frames", type=int, default=None, metavar="N",
+                    help=f"GIF frame count {GIF_FRAME_COUNT_RANGE[0]}..{GIF_FRAME_COUNT_RANGE[1]} "
+                         "(omit = server default, 9). Requires --gif.")
+    ap.add_argument("--frame-ms", type=int, default=None, metavar="MS",
+                    help=f"GIF per-frame duration {GIF_FRAME_MS_RANGE[0]}..{GIF_FRAME_MS_RANGE[1]} "
+                         "ms, rounded upstream to 10 ms (omit = server default, 200). "
+                         "Requires --gif.")
     ap.add_argument("--background", choices=("auto", "opaque", "transparent"), default=None,
                     help="request a transparent/opaque background where the provider/model "
                          "supports it; hard-refused on models known not to (e.g. Seedream).")
@@ -1383,9 +1488,7 @@ def _dry_run_plan(args) -> None:
         return
 
     provider = _resolve_provider_for_args(args, allow_unconfigured=True)
-    model = args.model or provider.default_model
-
-    provider = apply_model_dialect(provider, model)
+    provider, model = _specialize(provider, args)
     if args.sequential:
         maximum = args.max_images or 15
         print("→ dry-run: no API call, no key required", file=sys.stderr)
@@ -1416,14 +1519,27 @@ def _dry_run_plan(args) -> None:
     print(f"→ ratio:    {args.ratio}", file=sys.stderr)
     print(f"→ images:   {n}", file=sys.stderr)
     models = {provider.name: model}
-    print(f"→ cost:     {_cost_phrase(counts, models, args.quality)}", file=sys.stderr)
+    gif = _gif_options(args)
+    if gif is not None:
+        print(f"→ output:   GIF via {provider.edit_path if args.ref else provider.gen_path} "
+              f"(frames={gif.get('frame_count', 'server default')}, "
+              f"frame_ms={gif.get('frame_duration_ms', 'server default')})", file=sys.stderr)
+        print(f"→ cost:     {_gif_cost_phrase(n)}", file=sys.stderr)
+    else:
+        print(f"→ cost:     {_cost_phrase(counts, models, args.quality)}", file=sys.stderr)
     if args.json:
-        print(json.dumps({
+        plan = {
             "mode": "batch" if args.batch_file else "single",
             "provider": provider.name, "model": model, "ratio": args.ratio,
             "images": n,
-            "estimated_cost_cny": _billed_cost(counts, models, args.quality)[0],
-        }, ensure_ascii=False))
+            "estimated_cost_cny": (None if gif is not None
+                                   else _billed_cost(counts, models, args.quality)[0]),
+        }
+        if gif is not None:
+            plan["output_format"] = "gif"
+            plan["frame_count"] = gif.get("frame_count")
+            plan["frame_duration_ms"] = gif.get("frame_duration_ms")
+        print(json.dumps(plan, ensure_ascii=False))
 
 
 def _run_batch_file(args, provider: Provider, model: str, key: str,
@@ -2061,6 +2177,8 @@ def main() -> None:
         if not prompt:
             sys.exit("error: empty prompt (pass as arg or pipe via stdin)")
 
+    _validate_gif_args(args)
+
     if args.dry_run:
         _dry_run_plan(args)
         return
@@ -2081,14 +2199,15 @@ def main() -> None:
         sys.exit(f"error: invalid ratio {args.ratio!r}; choose from {sorted(VALID_RATIOS)}")
 
     provider = _resolve_provider_for_args(args)
-    model = args.model or provider.default_model
-
-    provider = apply_model_dialect(provider, model)
+    provider, model = _specialize(provider, args)
+    gif = _gif_options(args)
 
     if args.sequential and provider.gen_style != "ark":
         sys.exit("error: --sequential is only supported by -p volcengine")
 
-    stem = args.name or f"img_{datetime.now():%Y%m%d_%H%M%S}"
+    # Random tail: parallel runs started in the same second must not overwrite
+    # each other's (already billed) output.
+    stem = args.name or f"img_{datetime.now():%Y%m%d_%H%M%S}_{os.urandom(2).hex()}"
 
     if args.size:
         print(f"→ warning:  --size {args.size} ignored (use -r for aspect)", file=sys.stderr)
@@ -2119,6 +2238,9 @@ def main() -> None:
         print(f"→ background: {args.background}", file=sys.stderr)
     if args.quality:
         print(f"→ quality:  {args.quality}", file=sys.stderr)
+    if gif is not None:
+        print(f"→ output:   GIF (frames={gif.get('frame_count', 'server default')}, "
+              f"frame_ms={gif.get('frame_duration_ms', 'server default')})", file=sys.stderr)
     for r in args.ref or []:
         ok = r.startswith(("http://", "https://")) or Path(r).expanduser().is_file()
         if not ok:
@@ -2139,23 +2261,29 @@ def main() -> None:
 
     key = require_key(provider.key_env)
     client = make_client(args.timeout)
-    clean_stem = stem.removesuffix(".png")
+    clean_stem = stem.removesuffix(".png").removesuffix(".gif")
 
     def _attempt(img_seed: int | None) -> bytes:
         # a fresh idempotency key per image so retries dedupe but siblings don't
         idem = new_idempotency_key()
         if args.ref:
             return provider_edit(provider, prompt, model, args.ref, args.ratio, key,
-                                 client, background=args.background, idem_key=idem, quality=args.quality)
+                                 client, background=args.background, idem_key=idem,
+                                 quality=args.quality, gif=gif)
         return provider_generate(provider, prompt, model, args.ratio, key, client,
-                                 background=args.background, idem_key=idem, seed=img_seed, quality=args.quality)
+                                 background=args.background, idem_key=idem, seed=img_seed,
+                                 quality=args.quality, gif=gif)
+
+    def _spent(n: int) -> str:
+        if gif is not None:
+            return _gif_cost_phrase(n)
+        return _cost_phrase({provider.name: n}, {provider.name: model}, args.quality)
 
     json_items: list[dict] = []
     written: list[Path] = []
     try:
         for i in range(1, count + 1):
-            target = out_dir / (f"{clean_stem}.png" if count == 1
-                                else f"{clean_stem}_{i}.png")
+            name = clean_stem if count == 1 else f"{clean_stem}_{i}"
             # Offset the seed per sibling so a deterministic provider (siliconflow)
             # doesn't return N identical images; i=1 keeps the exact given seed.
             img_seed = None if args.seed is None else args.seed + (i - 1)
@@ -2171,8 +2299,7 @@ def main() -> None:
                 # siblings were billed regardless).
                 billed = len(written) + (1 if provider.bills_on_failure else 0)
                 if billed:
-                    print(f"→ spent: {_cost_phrase({provider.name: billed}, {provider.name: model}, args.quality)}",
-                          file=sys.stderr)
+                    print(f"→ spent: {_spent(billed)}", file=sys.stderr)
                 if args.json:
                     if count == 1:
                         print(json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False))
@@ -2181,30 +2308,49 @@ def main() -> None:
                         print(json.dumps(json_items, ensure_ascii=False))
                     sys.exit(1)
                 sys.exit(f"error: {e}")
+            w, h, fmt = probe.image_dims(raw)
+            ext, gif_fields = "png", {}
+            if gif is not None:
+                ext = {"GIF": "gif", "PNG": "png", "JPEG": "jpg"}.get(fmt, "bin")
+                gif_fields = {"format": ext, "frames": len(probe.gif_frames(raw))}
+            target = out_dir / f"{name}.{ext}"
             target.write_bytes(raw)
             if not args.no_metadata:
                 _write_metadata(target, raw, prompt=prompt, provider=provider.name,
                                 model=model, ratio=args.ratio, background=args.background,
                                 refs=args.ref or [], quality=args.quality)
-            w, h, _fmt = probe.image_dims(raw)
+            if gif_fields and gif_fields["frames"] < 2:
+                what = ("a 1-frame GIF" if fmt == "GIF"
+                        else f"a {fmt} still" if fmt in ("PNG", "JPEG")
+                        else "unrecognized data")
+                msg = (f"asked {provider.name} for an animated GIF but got {what}; "
+                       f"kept as {target}")
+                print(f"→ spent: {_spent(1)}", file=sys.stderr)
+                if args.json:
+                    print(json.dumps({"ok": False, "error": msg, "path": str(target),
+                                      **gif_fields}, ensure_ascii=False))
+                    sys.exit(1)
+                sys.exit(f"error: {msg}")
             json_items.append({"ok": True, "path": str(target), "error": None,
-                               "width": w, "height": h})
+                               "width": w, "height": h, **gif_fields})
             written.append(target)
             print(f"✓ generated in {time.time() - t0:.1f}s, saved to {target}", file=sys.stderr)
     finally:
         client.close()
 
     # cost summary for the real run (302ai bills each call; others vary)
-    print(f"→ spent: {_cost_phrase({provider.name: count}, {provider.name: model}, args.quality)}",
-          file=sys.stderr)
+    print(f"→ spent: {_spent(count)}", file=sys.stderr)
 
     if args.json:
         if count == 1:
             r = json_items[0]
-            print(json.dumps({
+            out = {
                 "ok": True, "path": r["path"], "error": None, "provider": provider.name,
                 "model": model, "ratio": args.ratio, "width": r["width"], "height": r["height"],
-            }, ensure_ascii=False))
+            }
+            if gif is not None:
+                out.update(format=r["format"], frames=r["frames"])
+            print(json.dumps(out, ensure_ascii=False))
         else:
             print(json.dumps(json_items, ensure_ascii=False))
     else:

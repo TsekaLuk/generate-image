@@ -10,7 +10,7 @@
   <img src="docs/sample-layers.jpg" alt="样例:双层筛网" width="380">
 </p>
 
-> 上面两张是用本 skill 出的扁平矢量插图(`gpt-image-2`, 16:9)。当前默认模型已是 `gpt-image-2.5-flare`。
+> 上面两张是用本 skill 出的扁平矢量插图(`gpt-image-2`, 16:9)。当前默认模型已是 `gpt-image-2.6-flare`（支持原生 RGBA 透明通道与 `--gif` 动图生成）。
 
 ---
 

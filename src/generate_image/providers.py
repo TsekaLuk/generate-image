@@ -90,18 +90,36 @@ class Provider:
     # unusable until {PREFIX}_BASE_URL is set. Routing skips such a provider entirely
     # so credentials are never sent to a guessed address.
     requires_base_url: bool = False
+    # Models that return an animated GIF (`--gif`). FIRST ENTRY IS THE DEFAULT used
+    # when --gif is given without -m. Empty = this provider cannot make a GIF.
+    gif_models: tuple[str, ...] = ()
+    # Field overrides applied to a GIF request, like one model_dialects entry.
+    gif_dialect: dict = dataclasses.field(default_factory=dict)
+
+
+# --- animated GIF ---------------------------------------------------------------
+# OpenAI Image API GIF controls (GPT Image 2.6, 2026-11-04):
+#   * `output_format: "gif"` on POST /v1/images/generations or /v1/images/edits;
+#     reference images that guide the animation go to the edits endpoint
+#   * `frame_count` 2..16, default 9; `frame_duration_ms` 20..2000 (rounded to
+#     10 ms), default 200 — both apply ONLY to GIF output
+#   * no streaming / partial images / output_compression for GIF
+#   * the result is base64 GIF bytes in data[].b64_json
+GIF_FRAME_COUNT_RANGE = (2, 16)
+GIF_FRAME_MS_RANGE = (20, 2000)
 
 
 # --- quality tiers ------------------------------------------------------------
 # gpt-image quality ladder. `low`/`medium`/`high` are the long-standing set;
-# GPT Image 2.5 (2026-09-08) added `xhigh` and `max` ABOVE the old ceiling.
+# GPT Image 2.5 (2026-09-08) and 2.6 added `xhigh` and `max` ABOVE the old ceiling.
 VALID_QUALITY_TIERS = ("low", "medium", "high", "xhigh", "max", "auto")
-# The two tiers that exist only on 2.5. Listed explicitly rather than sniffed out of
-# the model string: `"2.5" in model` would happily pass a future gpt-image-3 that
-# does not have them, and the failure would surface as a billed no-op — measured on
-# a relay, `xhigh` on gpt-image-2 returns HTTP 200 and simply ignores the tier.
+# The two tiers that exist only on 2.5 / 2.6. Listed explicitly rather than sniffed
+# out of the model string: a future model without them would otherwise surface as a
+# billed no-op — measured on a relay, `xhigh` on gpt-image-2 returns HTTP 200 and
+# simply ignores the tier.
 EXTENDED_QUALITY_TIERS = frozenset({"xhigh", "max"})
 EXTENDED_QUALITY_MODELS = frozenset({
+    "gpt-image-2.6-flare", "gpt-image-2.6-sunburst",
     "gpt-image-2.5-flare", "gpt-image-2.5-sunburst",
     "gpt-image-2.5", "gpt-image-2.5-dev",
 })
@@ -232,12 +250,13 @@ PROVIDERS: dict[str, Provider] = {
         # the aspect the caller asked for can travel in `size` instead of being
         # rounded to the nearest of three shapes.
         size_style="openai_custom",
-        # OpenAI shipped GPT Image 2.5 on 2026-09-08 as two ids: `-flare` (faster,
-        # the recommended default) and `-sunburst` (editing precision, slower).
-        # Both add two quality tiers above the old ceiling — `xhigh` and `max` —
-        # which this CLI does not send; see SKILL.md's parameter matrix for why.
-        default_model="gpt-image-2.5-flare",
+        # OpenAI shipped GPT Image 2.6 (2026-11-04) as two ids: `-flare` (faster,
+        # recommended default) and `-sunburst` (editing/composition precision, slower).
+        # Both support native RGBA transparency, extended quality tiers (`xhigh`/`max`),
+        # and animated GIF output (`output_format="gif"`).
+        default_model="gpt-image-2.6-flare",
         models=frozenset({
+            "gpt-image-2.6-flare", "gpt-image-2.6-sunburst",
             "gpt-image-2.5-flare", "gpt-image-2.5-sunburst",
             "gpt-image-2", "gpt-image-1",
         }),
@@ -250,6 +269,10 @@ PROVIDERS: dict[str, Provider] = {
         max_ref_images=16,  # OpenAI gpt-image edits accept up to 16 image[] parts
         supports_seed=False,  # gpt-image has no seed param
         supports_quality=True,  # `quality` is part of the published images contract
+        gif_models=("gpt-image-2.6-flare", "gpt-image-2.6-sunburst"),
+        # Omit large ~1.57MP custom sizes on GIF requests so the server chooses valid
+        # GIF dimensions within its per-frame pixel budget.
+        gif_dialect={"size_style": None},
     ),
     "302ai": Provider(
         name="302ai",
@@ -263,17 +286,16 @@ PROVIDERS: dict[str, Provider] = {
         # (1792x768 and 2048x2048 both came back exactly as asked) and has no
         # ~1.57 MP ceiling — 2048² = 4.19 MP was returned intact.
         size_style="openai_custom",
-        # Measured 2026-09-14 (same prompt, 1024², usage-token billing):
-        #   gpt-image-2.5-flare     74.3s  196 out-tok  <- default, fastest at its price
-        #   gpt-image-2.5-sunburst  91.0s  196 out-tok
-        #   gpt-image-2             56.0s  (faster, but pricier per image)
-        #   gpt-image-2.5           86.4s 2058 out-tok  (~10x dearer, no quality gain)
-        # All of the above are at the relay's DEFAULT quality tier. Measured
-        # 2026-09-16, `quality` swings output tokens 36x on this provider
-        # (low=196, max=7024) — and the cost table below has no quality dimension,
-        # which is exactly why no --quality flag is exposed yet.
-        default_model="gpt-image-2.5-flare",
+        # Measured 2026-11-26 (GPT Image 2.6 on /v1/images/generations):
+        #   gpt-image-2.6-flare     1024² PNG (low 824 tok / xhigh 3122 tok)
+        #   gpt-image-2.6-sunburst  1024² PNG (1756 tok)
+        #   background=transparent  1024² RGBA with real alpha channel
+        #   output_format=gif       512² GIF89a (555 tok, honors frame_count &
+        #                           frame_duration_ms; custom 1680x944 size returns
+        #                           HTTP 400, hence gif_dialect sets size_style=None)
+        default_model="gpt-image-2.6-flare",
         models=frozenset({
+            "gpt-image-2.6-flare", "gpt-image-2.6-sunburst",
             "gpt-image-2.5-flare", "gpt-image-2.5-sunburst",
             "gpt-image-2.5", "gpt-image-2.5-dev",
             "gpt-image-2", "gpt-image-1",
@@ -289,7 +311,9 @@ PROVIDERS: dict[str, Provider] = {
         supports_seed=False,  # gpt-image relay ignores seed
         # Measured 2026-09-16: quality is honored here — at 1024², output_tokens go
         # low/auto 196 -> medium 439 -> high 1756 -> xhigh 3122 -> max 7024 (35.8x).
-        supports_quality=True
+        supports_quality=True,
+        gif_models=("gpt-image-2.6-flare", "gpt-image-2.6-sunburst"),
+        gif_dialect={"size_style": None},
     ),
     "openrouter": Provider(
         name="openrouter",
@@ -571,6 +595,16 @@ def apply_model_dialect(provider: Provider, model: str) -> Provider:
     return provider
 
 
+def apply_gif_dialect(provider: Provider) -> Provider:
+    """Specialize `provider` for an animated-GIF request (see Provider.gif_dialect).
+
+    Call it after apply_model_dialect, only when --gif is set, and only on a provider
+    that has gif_models — a provider without GIF support is refused before this.
+    """
+    return dataclasses.replace(provider, **provider.gif_dialect) if provider.gif_dialect \
+        else provider
+
+
 def endpoint_unset(provider: Provider) -> bool:
     """True when a `requires_base_url` provider has no `{PREFIX}_BASE_URL` set.
 
@@ -594,7 +628,7 @@ def provider_is_configured(provider: Provider) -> bool:
 
 def route_provider(*, model: str | None = None, ref_count: int = 0,
                    background: str | None = None, seed: int | None = None,
-                   quality: str | None = None,
+                   quality: str | None = None, gif: bool = False,
                    allow_unconfigured: bool = False) -> Provider:
     """Choose the best provider for one CLI request.
 
@@ -606,6 +640,10 @@ def route_provider(*, model: str | None = None, ref_count: int = 0,
     candidates: list[tuple[tuple[int, int, int, int], Provider]] = []
     for priority, name in enumerate(ROUTER_PRIORITY):
         provider = resolve_provider(name)
+        if gif and (not provider.gif_models
+                    or (model and model not in provider.gif_models)):
+            continue
+        capable = apply_gif_dialect(provider) if gif else provider
         configured = provider_is_configured(provider)
         if endpoint_unset(provider):
             continue
@@ -614,12 +652,12 @@ def route_provider(*, model: str | None = None, ref_count: int = 0,
         if not configured and not allow_unconfigured:
             continue
         if ref_count and (
-            provider.edit_path is None
-            or provider.edit_style is None
-            or ref_count > provider.max_ref_images
+            capable.edit_path is None
+            or capable.edit_style is None
+            or ref_count > capable.max_ref_images
         ):
             continue
-        effective_model = model or provider.default_model
+        effective_model = model or (provider.gif_models[0] if gif else provider.default_model)
         if background and effective_model in provider.background_unsupported:
             continue
         # A pinned quality tier is a hard capability, exactly like background: a
@@ -643,6 +681,9 @@ def route_provider(*, model: str | None = None, ref_count: int = 0,
             detail.append(f"background={background}")
         if quality:
             detail.append(f"quality={quality}")
+        if gif:
+            gif_capable = sorted(n for n, p in PROVIDERS.items() if p.gif_models)
+            detail.append(f"GIF output (providers with GIF: {', '.join(gif_capable)})")
         if model:
             detail.append(f"model={model}")
         suffix = f" for {', '.join(detail)}" if detail else ""

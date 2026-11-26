@@ -194,27 +194,43 @@ large run because pricing and activation are account-specific.
   not to (the whole Seedream line). For matting/抠图 on those, use a chroma-key
   background in the prompt + local key-out instead.
 
+## 动图 GIF(`--gif`,GPT Image 2.6)
+
+OpenAI 2026-11-04 发布 GPT Image 2.6(`gpt-image-2.6-flare` / `-sunburst`),Image API 支持直接输出**动画 GIF**:`/v1/images/generations`(或带参考图走 `/v1/images/edits`)传 `output_format: "gif"`,可选 `frame_count`(2–16,默认 9)和 `frame_duration_ms`(20–2000,取整到 10ms,默认 200)。
+
+```bash
+generate-image "一个红色小球在白色地面上弹跳,无缝循环" --gif                 # 服务端默认 9 帧 × 200ms
+generate-image "风车转一圈,无缝循环" --gif --frames 12 --frame-ms 80 -r 1:1
+generate-image "让参考图里的角色挥手,循环" --gif --ref /tmp/pose.png          # 参考图引导 → edits
+```
+
+- `--gif` 不写 `-m` 时使用 provider 的首个 GIF 模型(`gpt-image-2.6-flare`);非 2.6 模型会在发请求前被拒绝。`--frames` / `--frame-ms` 省略时不发送,使用服务端默认。
+- GIF 请求通过 `gif_dialect` 省略自定义大 `size`(302ai 实测带 `1680x944` 会 HTTP 400,省略 `size` 返回真 512×512 `GIF89a`)。
+- 文件按**实际返回的字节**命名(GIF 存 `.gif`);若上游返回静态图或单帧,文件照存但退出码非 0(`--json` 中 `ok:false`),sidecar 与 `--json` 记录实测的 `frames` / `frame_ms`。
+- **一次只出一张动图**:GIF 按全部帧 token 计费且未纳入单价表,因此拒绝 `--count` / `--batch-file` / `--dag-file` / `--flow-file` / `--sequential`。
+
 ## 参数支持矩阵
 
-`gpt-image-2.5`(2026-09-08 发布,两个 id:`-flare` 快、默认;`-sunburst` 编辑精度
-优先、更慢)的官方参数契约比本 skill 目前发出去的**大得多**。下面逐条标注
+`gpt-image-2.6`(当前默认 `gpt-image-2.6-flare`;`-sunburst` 复杂构图与编辑精度优先、更慢;2.5 与 2 仍可选)的官方参数契约比本 skill 目前发出去的**大得多**。下面逐条标注
 "官方允许什么 / 我们发不发 / 实测怎么反应"。**没实测的一律写"未测",
 不写"理论上支持"。**
 
 ### 我们实际发出去的字段
 
-`model`、`prompt`、`n=1`、`size`、`background?`、`seed?`。
+`model`、`prompt`、`n=1`、`size`(GIF 时省略)、`background?`、`quality?`、`output_format?`、`frame_count?`、`frame_duration_ms?`、`seed?`。
 
-**`quality` / `input_fidelity` / `output_compression` / `moderation` 这四个字段,
-代码里一次都没出现过** —— 也就是每次调用都跑在服务端的 `auto` 档上。
+**`input_fidelity` / `output_compression` / `moderation` 这三个字段,
+代码里一次都没出现过。**
 
 ### 矩阵
 
-| 参数 | 官方契约(2.5) | 我们发吗 | 实测 |
+| 参数 | 官方契约(2.5 / 2.6) | 我们发吗 | 实测 |
 |---|---|---|---|
-| `size` | 自定义 WxH:16 的倍数、比例 1:3~3:1、单边 ≤3840、总像素 655,360~8,294,400 | ✅ 发精确比例值 | 302ai 实测原样返回(`1792x768`、`2048x2048`) |
-| `quality` | `low`/`medium`/`high`/**`xhigh`**/**`max`**/`auto`(后两档 2.5 新增) | ✅ `--quality`(默认不发) | ⚠️ **36 倍成本杠杆**,见下 |
-| `background` | `transparent`/`opaque`/`auto` | ✅ 发 | 官方 API 支持 |
+| `size` | 自定义 WxH:16 的倍数、比例 1:3~3:1、单边 ≤3840、总像素 655,360~8,294,400 | ✅ 发精确比例值(GIF 时省略) | 302ai 实测原样返回(`1792x768`、`2048x2048`);GIF 带 1680x944 会 400 |
+| `quality` | `low`/`medium`/`high`/**`xhigh`**/**`max`**/`auto`(后两档 2.5 / 2.6 新增) | ✅ `--quality`(默认不发) | ⚠️ **36 倍成本杠杆**(2.5);2.6-flare 实测 `low` 824 tok / `xhigh` 3122 tok |
+| `background` | `transparent`/`opaque`/`auto` | ✅ 发 | 官方 API & 302ai 2.6 实测真 8-bit RGBA 透明通道 |
+| `output_format=gif` | 2.6 专属,`frame_count` 2–16,`frame_duration_ms` 20–2000 | ✅ `--gif` / `--frames` / `--frame-ms` | 302ai 实测返回真 512² `GIF89a`(555 tok);官方 API 需账号开通 GIF 权限 |
+| `output_format=svg` | 2.6 官方文档声明 | ❌ 暂不发 | 302ai 实测 HTTP 400(`Parameter error`) |
 | `input_fidelity` | `high`/`low`,**仅 edits**,控制对参考图(尤其人脸)的还原力度 | ❌ 从不发 | 发给 generations 不报错但行为不稳(302ai 上那次返回尺寸与请求不符);**别用在 generations 上;edits 路径未测** |
 | `output_format` | `png`/`jpeg`/`webp` | ❌ 从不发(默认 png) | 未测 |
 | `output_compression` | 0-100,仅 jpeg/webp | ❌ 从不发 | 未测 |

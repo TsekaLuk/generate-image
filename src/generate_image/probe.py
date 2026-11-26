@@ -35,7 +35,10 @@ DEFAULT_PROMPT = "a single flat minimalist red circle centered on a plain white 
 
 
 def image_dims(b: bytes) -> tuple[int, int, str]:
-    """(width, height, format) from a PNG or JPEG byte string; (0,0,'?') otherwise."""
+    """(width, height, format) from a PNG, JPEG or GIF byte string; (0,0,'?') otherwise."""
+    if b[:6] in (b"GIF87a", b"GIF89a") and len(b) >= 10:
+        w, h = struct.unpack("<HH", b[6:10])
+        return w, h, "GIF"
     if b[:8] == b"\x89PNG\r\n\x1a\n":
         w, h = struct.unpack(">II", b[16:24])
         return w, h, "PNG"
@@ -55,6 +58,54 @@ def image_dims(b: bytes) -> tuple[int, int, str]:
             i += 2 + struct.unpack(">H", b[i + 2:i + 4])[0]
         return 0, 0, "JPEG?"
     return 0, 0, "?"
+
+
+def gif_frames(b: bytes) -> list[int]:
+    """Per-frame delay in ms of a GIF, one entry per frame; [] if `b` is not a GIF.
+
+    Walks the GIF block structure (no Pillow dependency): every image descriptor is
+    one frame, and its delay comes from the Graphic Control Extension before it
+    (stored in 1/100 s, 0 when the frame has none). A frame counts only once its
+    image data is terminated, so a truncated file returns the COMPLETE frames
+    before the cut — a short count is visible instead of raising.
+    """
+    if b[:6] not in (b"GIF87a", b"GIF89a") or len(b) < 13:
+        return []
+
+    def table_len(packed: int) -> int:
+        return 3 * (1 << ((packed & 0x07) + 1)) if packed & 0x80 else 0
+
+    def skip_sub_blocks(i: int) -> int:
+        while i < len(b):
+            size = b[i]
+            i += 1 + size
+            if size == 0:
+                return i if i <= len(b) else -1
+        return -1
+
+    frames: list[int] = []
+    delay = 0
+    i = 13 + table_len(b[10])
+    while i < len(b):
+        block = b[i]
+        if block == 0x3B:                      # trailer
+            break
+        if block == 0x21 and i + 1 < len(b):   # extension
+            if b[i + 1] == 0xF9 and i + 6 < len(b):
+                delay = struct.unpack("<H", b[i + 4:i + 6])[0] * 10
+            i = skip_sub_blocks(i + 2)
+            if i < 0:
+                break
+            continue
+        if block == 0x2C and i + 10 <= len(b):  # image descriptor = one frame
+            i = skip_sub_blocks(i + 10 + table_len(b[i + 9]) + 1)
+            if i < 0:
+                break                          # cut inside this frame: not counted
+            frames.append(delay)
+            delay = 0
+            continue
+        break
+    return frames
 
 
 def parse_args() -> argparse.Namespace:

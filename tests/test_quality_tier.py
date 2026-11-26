@@ -191,7 +191,7 @@ def test_dry_run_json_estimate_carries_the_tier(tmp_path, monkeypatch, capsys):
     un-toned one — a wrong number is worse here than on the terminal."""
     monkeypatch.setenv("AI302_API_KEY", "k")
     monkeypatch.setattr(sys, "argv", [
-        "g", "t", "-p", "302ai", "--dry-run", "--json", "--quality", "high",
+        "g", "t", "-p", "302ai", "-m", Q_MODEL, "--dry-run", "--json", "--quality", "high",
         "-r", "1:1", "-o", str(tmp_path), "-n", "p", "--no-preview",
     ])
     generate.main()
@@ -202,7 +202,7 @@ def test_dry_run_json_estimate_carries_the_tier(tmp_path, monkeypatch, capsys):
 def test_dry_run_json_estimate_unchanged_without_the_flag(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("AI302_API_KEY", "k")
     monkeypatch.setattr(sys, "argv", [
-        "g", "t", "-p", "302ai", "--dry-run", "--json",
+        "g", "t", "-p", "302ai", "-m", Q_MODEL, "--dry-run", "--json",
         "-r", "1:1", "-o", str(tmp_path), "-n", "p", "--no-preview",
     ])
     generate.main()
@@ -221,7 +221,7 @@ def test_post_run_spent_line_carries_the_tier(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(generate, "make_client",
                         lambda *a, **k: httpx.Client(transport=httpx.MockTransport(handler)))
     monkeypatch.setattr(sys, "argv", [
-        "g", "t", "-p", "302ai", "--quality", "high", "-r", "1:1",
+        "g", "t", "-p", "302ai", "-m", Q_MODEL, "--quality", "high", "-r", "1:1",
         "-o", str(tmp_path), "-n", "p", "--no-preview",
     ])
     generate.main()

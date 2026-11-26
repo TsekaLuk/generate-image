@@ -30,6 +30,10 @@ def main() -> None:
             print(f"    note     : {prefix}* models use a different dialect "
                   f"({ov.get('gen_path', p.gen_path)}, "
                   f"img2img {ov.get('edit_style', edits)})")
+        if p.gif_models:
+            print(f"    gif      : --gif uses {p.gif_models[0]} by default "
+                  f"({', '.join(p.gif_models)}) via "
+                  f"{p.gif_dialect.get('gen_path', p.gen_path)}")
         for m in sorted(p.models):
             marker = "★" if m == p.default_model else " "
             print(f"    {marker} {m}")
