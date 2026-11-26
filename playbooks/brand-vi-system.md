@@ -25,7 +25,14 @@ Follow Karl Gerstner's axiom (*"Instead of solutions for problems, programmes fo
 ### A. Build a Redundant Multi-Layer Distinctive Brand Asset (DBA) Stack
 Brand recognition (Jenni Romaniuk: **Fame × Uniqueness**) must **never have a single point of failure** — if identity collapses the moment the logo is covered or the color changes, you built a stamp, not a system. Lock a disciplined set of **Constants** distributed across orthogonal layers so **Variables** (color worlds, imagery, medium density, layout responsiveness) can flex infinitely without fracturing identity:
 
-1. **Form & Silhouette Grammar:** Distinctive sculptural, calligraphic, or geometric DNA (custom emblem, handcrafted logotype, or modular shape language with unmistakable B&W silhouette).
+1. **Form & Silhouette Grammar (Anti-Tangram Logo Craft):**
+   - **Ban 2-piece geometric clipart & 2-color patchwork splits:** Slicing a square or parallelogram into two plain halves and coloring one half dark + one half accent looks like a $5 automated logo template.
+   - **Choose deliberately among 4 true iconic archetypes** (*Logo Modernism* / Chermayeff & Geismar / *Kamon* / Pentagram):
+     1. *Pure Sculptural Wordmark* with an unforgettable optical quirk or custom ligature (no forced abstract blob!);
+     2. *Monogram / Rotational Ambigram / Letter-Fused Wit* built directly from the brand's actual Latin or Chinese letters (e.g., *Sun Microsystems*, *Bank of China*, *FedEx*);
+     3. *Topological Interlock / Op-Art Continuity* (e.g., *OpenAI* knot, *Woolmark*, *Chase* 4-fold rotational aperture);
+     4. *Heraldic Radial / Kamon Crest* (*Yusaku Kamekura*, *Kazumasa Nagai*).
+   - Design and lock in **single-color monochrome ink** first. If all exploration candidates look like generic stock vectors, **reject the whole board** and iterate — and always align on the approved Logo before fanning out downstream touchpoints.
 2. **Typographic Voice & Scale Ramp:** Ownable CJK/Latin pairing, weight contrast, tracking/leading cadence, and editorial hierarchy strong enough to speak even without a logo.
 3. **Spatial & Grid Grammar ("System-as-Logo"):** Consistent structural proportions, margin/framing rules, container geometry, and information-layout logic (how OpenAI, Linear, MIT Media Lab, or ABCD's *EDITOR* remain immediately attributable even with zero emblem).
 4. **Graphic / Behavioral Motif DNA:** Recurring modular pattern, optical/motion physics, framing device, or bespoke illustration/character language (*include a mascot or character ONLY when authentic to the brand's real habitat — never by habit or dogma*).
