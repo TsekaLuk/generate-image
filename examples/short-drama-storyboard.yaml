@@ -1,0 +1,97 @@
+# Short-Drama (短剧) 4-Step Storyboard Pipeline — Runnable v3 DAG Example
+#
+# Demonstrates:
+#   * `vars` + `blocks` (shared character identity & visual style DNA — zero repetition)
+#   * `stage: anchors` -> Character Bible定妆照 (run first via `--only-roots` or `--stage anchors`)
+#   * `stage: board`   -> 3x3 latent-coherent storyboard grid with automatic `grid: 3x3` slicing!
+#   * `stage: keyframes` -> `foreach` fan-out referencing BOTH `@board:<cell>` AND `@char`
+#                           to render full-resolution 9:16 keyframes ready for video models
+#
+# Recommended harness workflow:
+#   1. Dry-run preview:
+#        generate-image --dag-file examples/short-drama-storyboard.yaml --dry-run
+#   2. Stage 1 (Character anchor — inspect image via vision before fanning out):
+#        generate-image --dag-file examples/short-drama-storyboard.yaml --stage anchors --resume -o ~/Pictures/drama-ep01
+#   3. Stage 2 (3x3 coherent storyboard board + automatic 9-panel slice):
+#        generate-image --dag-file examples/short-drama-storyboard.yaml --stage board --resume -o ~/Pictures/drama-ep01
+#   4. Stage 3 (Full-res 9:16 keyframe fan-out + contact_sheet.png + gallery.html):
+#        generate-image --dag-file examples/short-drama-storyboard.yaml --resume -o ~/Pictures/drama-ep01
+
+vars:
+  setting: "rain-slicked neon night alley in Neo-Shanghai, wet asphalt reflecting cyan and amber signage, light mist"
+  palette: "60% deep midnight teal shadows, 30% cool rain-blue midtones, 10% warm amber neon rim highlights"
+
+defaults:
+  ratio: "9:16"
+  model: "gpt-image-2.6-flare"
+
+blocks:
+  char_dna: >-
+    26-year-old East Asian female detective, sharp determined eyes, tiny mole below left eye,
+    chin-length jet-black wolf-cut hair damp from rain; layered wardrobe: fitted black mock-neck
+    sweater underneath a weathered dark-olive waterproof trench coat with upturned collar,
+    thin silver chain necklace and matte silver wristwatch on left wrist
+  cinematography: >-
+    cinematic live-action film still shot on 35mm anamorphic lens, natural skin texture with
+    subtle pores and rain droplets, moody high-contrast neo-noir lighting, {{vars.palette}}
+  negatives: >-
+    no AI plastic skin, no anime/illustration look, no changing outfit or hair, no text,
+    no subtitles, no panel borders in standalone frames, no watermarks
+
+tasks:
+  # Stage 1: Canonical character anchor
+  - id: char
+    stage: anchors
+    ratio: "3:4"
+    model: "gpt-image-2.6-sunburst"
+    spec:
+      deliverable: "Cinematic character reference sheet portrait"
+      subject: "{{blocks.char_dna}}, calm resolute three-quarter portrait standing upright"
+      composition: "medium full portrait centered on clean neutral dark-slate studio backdrop, generous headroom"
+      style: "{{blocks.cinematography}}"
+      lighting: "controlled soft key light at 45 degrees plus crisp rim light showing coat texture"
+      negatives: "{{blocks.negatives}}"
+
+  # Stage 2: Single-latent 3x3 coherent storyboard board + deterministic 9-panel slice
+  - id: board
+    stage: board
+    model: "gpt-image-2.6-sunburst"
+    refs: ["@char"]
+    grid:
+      rows: 3
+      cols: 3
+      trim_pct: 2.0
+      labels: ["1", "2", "3", "4", "5", "6", "7", "8", "9"]
+    spec:
+      deliverable: "Strict 3-by-3 uniform cinematic storyboard contact sheet (9 equal vertical 9:16 panels separated by thin 2px black hairline dividers, read left to right top to bottom)"
+      subject: "Nine sequential narrative shots of {{blocks.char_dna}} in {{vars.setting}}"
+      info_points:
+        - "Frame 1: Wide establishing shot of the detective entering the misty neon alley from behind"
+        - "Frame 2: Medium tracking shot walking past glowing street stalls, hand near coat pocket"
+        - "Frame 3: Over-the-shoulder shot spotting a shadowy informant under a flickering doorway"
+        - "Frame 4: Medium close-up turning sharply toward an off-screen sound, rain glistening on cheek"
+        - "Frame 5: Extreme close-up of eyes narrowing in realization, cyan neon reflected in irises"
+        - "Frame 6: Low-angle heroic shot raising a metallic encrypted drive into the amber streetlight"
+        - "Frame 7: High-angle top-down shot standing alone at a wet intersection surrounded by puddle reflections"
+        - "Frame 8: Side profile close-up whispering into a concealed collar earpiece"
+        - "Frame 9: Dynamic full-body sprint down the alley as dramatic steam rises behind her"
+      style: "{{blocks.cinematography}}"
+      negatives: "no panel numbers, no text labels, no captions, no speech bubbles, {{blocks.negatives}}"
+
+  # Stage 3: Fan out selected panels into full-resolution standalone 9:16 keyframes
+  - id: "kf_0{{shot.cell}}_{{shot.slug}}"
+    stage: keyframes
+    as: shot
+    foreach:
+      - {cell: "1", slug: "establishing", desc: "Wide establishing shot entering the misty neon alley from behind, vast atmospheric depth"}
+      - {cell: "4", slug: "mcu_turn",     desc: "Medium close-up turning sharply toward an off-screen sound, rain glistening on cheek and collar"}
+      - {cell: "5", slug: "ecu_eyes",     desc: "Extreme close-up of eyes narrowing in realization, cyan neon signs reflected sharply in irises"}
+      - {cell: "6", slug: "low_heroic",   desc: "Low-angle heroic shot holding a sleek metallic encrypted drive under warm amber streetlight"}
+      - {cell: "9", slug: "sprint_climax", desc: "Dynamic full-body sprint through rising street steam, trench coat flaring with motion"}
+    refs: ["@board:{{shot.cell}}", "@char"]
+    spec:
+      deliverable: "Standalone full-resolution cinematic vertical film keyframe"
+      subject: "Re-render the exact framing, pose, and camera composition of the first reference panel while preserving the exact facial identity and layered wardrobe of the second character reference: {{blocks.char_dna}}, {{shot.desc}}"
+      context: "{{vars.setting}}"
+      style: "{{blocks.cinematography}}"
+      negatives: "{{blocks.negatives}}"

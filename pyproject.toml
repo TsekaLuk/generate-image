@@ -1,13 +1,14 @@
 [project]
 name = "generate-image"
-version = "2.5.0"
-description = "Capability-routed multi-provider image generation with img2img, Seedream sequences, DAG scheduling, and bounded acceptance-loop flows."
+version = "3.0.0"
+description = "Capability-routed multi-provider image generation with scalable matrix DAGs, board slicing, contact sheets, and interactive galleries."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "httpx>=0.27",
     "tenacity>=8.2",
     "pyyaml>=6.0",
+    "pillow>=10.0",
 ]
 
 [project.scripts]
@@ -15,6 +16,8 @@ generate-image = "generate_image.cli:main"
 generate-image-models = "generate_image.list_models:main"
 generate-image-probe = "generate_image.probe:main"
 generate-image-doctor = "generate_image.doctor:main"
+generate-image-slice = "generate_image.board:main_slice"
+generate-image-gallery = "generate_image.gallery:main"
 
 [build-system]
 requires = ["hatchling"]

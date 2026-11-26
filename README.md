@@ -191,6 +191,12 @@ Flow 当前刻意采用单路由控制语义；并行 fan-out / multi-parent joi
 
 ## 几个坑
 
+- **v3 规模化 DAG + Board 切图 + 审核总览**（2026-11-26）：
+  - **声明式矩阵展开**：DAG YAML 支持 `vars`（`--var k=v`）、`defaults`、`blocks`（共享身份/画风块）、结构化 6 层 `spec:`、`matrix` 笛卡尔积与 `foreach` 展开，30 行 YAML 即可编排 100+ 张一致性资产，并支持 `provider_pool` 轮询分片与 `--max-cost` 硬预算闸门。
+  - **Board / 九宫格分镜自动切图**：节点声明 `grid: 3x3`（或独立命令 `generate-image-slice`），出图后自动裁切单格并支持下游 `@board:C` / `@board[2]` 引用扇出高清关键帧（见 `examples/short-drama-storyboard.yaml`）。
+  - **内容哈希断点续跑与分阶段门控**：`--resume` 跳过未变更节点、上游锚点更新自动级联失效下游；配合 `--only-roots` / `--stage` / `--only` / `--until` 实现 Harness Agent 自主视觉把关后再扇出。
+  - **双审核产物**：DAG 跑完自动生成 `contact_sheet.png`（供 Agent 一次视觉审查 16 格）与离线交互式 `gallery.html`（含棋盘格/浅/深底色切换检查 RGBA 透明边缘、筛选点赞与一键复制淘汰项 `--only` 重跑命令），也可通过 `generate-image-gallery <dir>` 独立生成。
+  - **模块化领域 Playbooks**：`playbooks/` 覆盖信息图/知识图解、商业摄影、海报排版、品牌图标/透明贴纸、Board/短剧分镜九宫格、角色绘本系列，配合 `SKILL.md` 两阶段提示词编译协议消除一句话偷懒和知识漂移。
 - **比例用 `-r`,别写进 prompt**;写了会和注入的提示词打架。
 - **官方 `size` 是真控**(1024×1024 / 1536×1024 / 1024×1536,经 `-r` 映射);中转是否真的兑现 `size` 因家而异。要更高分辨率用 `147ai` 的 4K 档或 `siliconflow` 的 `image_size`。想核实任意 provider 的真实行为,用探针:`uv run python -m generate_image.probe -p <provider>`(或 `generate-image-probe` 命令,联网 `uv sync` 后可用)。
 - **`--ref` 各家机制不同**(OpenAI edits / chat / image_prompt / Ark Base64 `image[]`),效果会有差异。

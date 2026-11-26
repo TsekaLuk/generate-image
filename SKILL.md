@@ -5,14 +5,73 @@ description: Use when the user asks to generate, create, draw, or paint an image
 
 # generate-image
 
-Generate images through a pluggable **provider registry** — every backend is one
-OpenAI-compatible (or near-compatible) entry in `providers.py`. Saves a PNG to
-`~/Pictures/generate-image/` and previews inline in kitty.
+Generate single images, N-in-1 exploration/storyboard boards, or 10–1000+ asset DAGs
+through a pluggable **provider registry** (`providers.py`). Saves PNG/GIF to
+`~/Pictures/generate-image/`, auto-generates `contact_sheet.png` (for agent visual QA)
+and an offline interactive `gallery.html` (for user curation), and previews inline in kitty.
+
+---
+
+## Agent Operating Protocol (Read First)
+
+You are the **Creative Director, Prompt Compiler, and Visual QA Reviewer**. Do NOT act
+as a passive one-line pass-through or nag the user for permission before every image.
+
+### 1. Autonomy & Topology Router (Act Proactively)
+
+Choose the right generation topology from the user's intent — **never default to 1 timid image when a board or DAG delivers a far better result**:
+
+| User Intent | Default Topology | Autonomy Gate |
+|---|---|---|
+| **Clear single asset** ("画一张…", exact spec) | 1-shot (or 2–3 quick variants if visual direction is open) | **Run directly**, no nagging |
+| **Open exploration / "找找感觉"** ("做个海报/主视觉，风格你定") | **1-call `2x3` / `3x3` Exploration Board** (`grid: 2x3`) OR **4–6 image style matrix DAG** | **Run directly** → inspect visually → expand winner |
+| **Marketing kit / icon set / product campaign / character deck** | **Staged `1 → N` Star DAG** (`stage: anchors` → agent visually verifies anchor → `--resume` fans out `matrix`/`foreach`) | **≤19 images: run directly**; **≥20 images: `--dry-run` confirm once** |
+| **Short drama / storyboard / video keyframes (短剧分镜)** | **4-Step Board Pipeline**: `char` anchor → `3x3` latent-coherent storyboard (`grid: 3x3`) → auto-slice (`@board:1..9`) → parallel high-res keyframe fan-out | **≤19 images: run directly**; **≥20 images: `--dry-run` confirm once** |
+| **Transparent icons / stickers / cutouts** | Default `gpt-image-2.6-flare` + `--background transparent` (native RGBA on `openai` & `302ai`) | **Run directly** |
+| **Animated loop (GIF)** | `--gif [--frames 2..16] [--frame-ms 20..2000]` (on `openai` or `302ai`) | **Run directly** |
+
+> **Result-first rule:** Do not interrupt the user over micro-costs on small runs. Focus on delivering curated, high-taste results (plus `gallery.html` for easy selection). Ask for upfront approval on genuinely large batches (**≥20 images**), extreme quality tiers (`--quality max` bulk runs), or when core factual premises are ambiguous.
+
+### 2. Two-Stage Prompt Compiler (Mandatory Unless User Asks for Raw Verbatim)
+
+**Never pass a lazy 1-sentence user request raw to the image model.** Unless the user explicitly says "按我原话直接发", ALWAYS compile through two stages:
+
+#### Stage A · Context & Domain Knowledge Grounding
+1. **Absorb context:** Pull relevant facts, parameters, brand tone, or copy from the current conversation AND check local workspace context (e.g., `brand.md`, design tokens, specs).
+2. **Ground missing domain knowledge:** For infographics, diagrams, or commercial posters, first write an explicit **Information Brief** (1 short thesis headline, 3–6 concrete facts/steps/causal arrows, short exact quoted labels, and visual metaphors for abstract ideas).
+
+#### Stage B · Six-Layer Structured Visual Spec
+Compile every prompt (or DAG `spec:`) in natural structured prose — **no tag-soup buzzwords (`4k, masterpiece, ultra detailed`)**:
+1. **Deliverable & Subject / Info Core:** Exact asset type, subject geometry, count, action, or information hierarchy + reading flow.
+2. **Composition & Design Grid:** Explicit layout system (Swiss grid, Bento grid, 3-column pipeline, rule-of-thirds, 3×3 uniform storyboard) + camera angle/lens + intentional negative space / title safe zone.
+3. **Medium, Material & Craft:** Tactile reality (`matte anodized aluminum`, `Risograph spot-ink grain`, `35mm anamorphic film still`, `cut matte cardstock`, `flat editorial vector`).
+4. **Lighting Physics & 60-30-10 Color Theory:** Real lighting setup (`45° overhead softbox`, `vertical strip-box rim light`, `grounded contact shadow`) + explicit 60% dominant / 30% secondary / 10% accent color palette.
+5. **Context & Depth Layers:** Foreground / midground / background spatial cues and restrained props.
+6. **Targeted Negatives:** Genre-specific anti-drift constraints.
+*(Aspect ratio goes strictly in `-r` / DAG `ratio`, never inside prompt text.)*
+
+#### Stage C · On-Demand Playbooks (`playbooks/`)
+Before compiling prompts for a specific visual genre, read the matching playbook:
+- **Infographics / Knowledge Diagrams / Flowcharts** → [`playbooks/infographic.md`](playbooks/infographic.md)
+- **Commercial / Product Photography / E-Commerce** → [`playbooks/commercial-photo.md`](playbooks/commercial-photo.md)
+- **Posters / Covers / Swiss Editorial Graphic Design** → [`playbooks/poster-editorial.md`](playbooks/poster-editorial.md)
+- **Brand Icons / UI Assets / Transparent RGBA Stickers** → [`playbooks/brand-icon-asset.md`](playbooks/brand-icon-asset.md)
+- **N-in-1 Concept Boards & Short-Drama (短剧) 3×3 Storyboards** → [`playbooks/board-storyboard.md`](playbooks/board-storyboard.md)
+- **Coherent Character / Storybook Illustration Decks** → [`playbooks/series-storybook.md`](playbooks/series-storybook.md)
+
+### 3. Harness-Native Agent Visual QA Loop (No External VLM Required)
+
+Use native multimodal vision (`read_file`) as the quality gate:
+1. **Anchor / Board Stage:** Run `--stage anchors --resume` (or `--only-roots`), inspect anchors or `2x3` / `3x3` board with `read_file`. Pick the strongest direction.
+2. **Scale Fan-Out:** Bind the winner (`--var anchor=...` or `@board:C`) and run `--resume` to expand the full matrix/foreach DAG.
+3. **One-Shot Batch Audit:** Inspect the auto-generated `contact_sheet.png` (up to 16 labeled cells per sheet) in a single vision call. Surgically rerun outliers via `--only id1,id2 --resume`.
+4. **Curated Delivery:** Present top picks alongside the offline interactive `gallery.html`.
+
+---
 
 **Default: `auto` capability routing.** The router selects the first configured
-provider that satisfies the request's model, img2img, background, and seed
-requirements. Use `-p` to force a provider. Run
-`./list_models.py` for the live registry.
+provider that satisfies the request's model, img2img, background, quality, gif,
+and seed requirements. Use `-p` to force a provider. Run `./list_models.py` for the live registry.
 
 ## Providers (`-p` / `--provider`)
 
@@ -388,92 +447,55 @@ Retries, backoff, rate limiting and adaptive concurrency are built in
   `uv run generate-image-doctor` — module fallback (no console-script install needed):
   `uv run --no-sync python -m generate_image.doctor [--probe]`.
 
-## Preflight (every call)
+## Quick Reference Checklist
 
-Confirm with the user in ONE message before running:
-
-1. **Prompt** — exact text. If vague, ask. Don't invent.
-2. **Aspect ratio** — one of `1:1 16:9 9:16 3:2 2:3 4:3 3:4 21:9 4:5 5:4`. Default `16:9`.
-3. **Provider + model** — default `-p auto`; report the routed provider/model in
-   the cost preview. Override only on user request. `./list_models.py` shows each
-   provider's models.
-4. **Reference image?** — URL or local path (≤10 MB). Omit if none. img2img works
-   on all five providers but via different mechanisms (see table).
-5. **Transparent background?** — only where the provider/model supports it;
-   hard-refused on the Seedream line.
-6. **Batch job?** — `--batch-file prompts.txt` or `--dag-file tasks.yaml` + optional
-   concurrency controls. Confirm the exact task count and provider cost first.
+Before launching a run:
+1. **Context + Playbook:** Load the matching `playbooks/*.md` and pull domain facts/brand context from conversation or workspace.
+2. **Compile structured prompt (or DAG `spec:`):** Six layers — never a lazy 1-liner (unless the user explicitly requests verbatim raw text).
+3. **Pick topology:** Single shot vs `2x3`/`3x3` Exploration Board vs Staged `1→N` DAG vs Short-Drama Board→Slice→Keyframe DAG.
+4. **Aspect & model:** Pass `-r` (`1:1 16:9 9:16 3:2 2:3 4:3 3:4 21:9 4:5 5:4`, default `16:9`); default `gpt-image-2.6-flare` (use `-m gpt-image-2.6-sunburst` for dense text/infographics/strict 3×3 grids/precision edits).
+5. **Transparent / GIF:** `--background transparent` works natively (RGBA) on `openai` & `302ai` with `gpt-image-2.6-*`. For GIF, pass `--gif [--frames 2..16] [--frame-ms 20..2000]`.
+6. **Budget gate:** Run directly for ≤19 images; run `--dry-run` and confirm once for ≥20 images (or pass `--max-cost` on large DAGs).
 
 ## Usage
 
 ```bash
-# Default = auto route, 16:9
-./generate.py "夕阳下的金门大桥，油画风格"
-./generate.py -r 9:16 "竖版手机壁纸"                       # aspect via -r
+# Default = auto route (openai / gpt-image-2.6-flare), 16:9
+./generate.py "<compiled 6-layer prompt>"
+./generate.py -r 9:16 "<vertical poster prompt>"
 
-# Switch provider
-./generate.py -p openai "品牌标志"
-./generate.py -p siliconflow -m Qwen/Qwen-Image "高清插画"
-./generate.py -p openrouter "一只赛博朋克猫"
-./generate.py -p 302ai "扁平矢量海报"
-./generate.py -p volcengine "中文信息图"
-./generate.py -p volcengine -m doubao-seedream-5-0-pro-260628 "商业海报"
+# Native RGBA transparent asset
+./generate.py --background transparent -r 1:1 "<isolated icon prompt>"
 
-# 147ai — dialect follows the model, nothing else to configure
-./generate.py -p 147ai "一只赛博朋克猫"                      # gemini-3-pro, 2K
-GENIMAGE_IMAGE_SIZE=4K ./generate.py -p 147ai -r 21:9 "超宽壁纸"   # 实测 6336x2688
-./generate.py -p 147ai -m gpt-image-2-high -r 1:1 "产品图"    # 2048², OpenAI dialect
-./generate.py -p 147ai -m gemini-2.5-flash-image "草稿"       # ¥0.04,但恒定 ~1MP
+# Animated GIF on GPT Image 2.6
+./generate.py "一个红色小球弹跳,无缝循环" --gif --frames 8 --frame-ms 120
 
-# Image-to-image — local file or URL (works on all five, different backends)
-./generate.py --ref /tmp/face.png "换成梵高风格"
+# Precision mode for dense infographics / strict 3x3 boards / reference edits
+./generate.py -m gpt-image-2.6-sunburst --ref /tmp/anchor.png "<structured edit prompt>"
 
-# Seedream coherent multi-image output in one request
-./generate.py -p volcengine --sequential --max-images 4 "四格连贯分镜"
+# Standalone board grid slicing & gallery builders
+uv run generate-image-slice board.png --grid 3x3 --trim 2 -o ./panels
+uv run generate-image-gallery ~/Pictures/my-campaign
 
-# Matting where --background is unsupported: chroma-key background + local key-out
-./generate.py "一个圆形 App 图标，独立元素。纯色 chroma key 绿色背景 #00FF00，背景无渐变无阴影"
-
-# Batch — one prompt per line
-./generate.py --batch-file prompts.txt --concurrency 3
+# Scalable DAG workflows (staged anchor -> resume fan-out -> contact sheet + gallery)
+uv run generate-image --dag-file examples/short-drama-storyboard.yaml --stage anchors --resume -o ~/Pictures/drama
+uv run generate-image --dag-file examples/short-drama-storyboard.yaml --resume --concurrency 8 -o ~/Pictures/drama
 ```
 
-Run `./generate.py --help` for every flag. Output path printed to stdout
-(pipe-friendly); default filename `img_YYYYMMDD_HHMMSS.png` under
-`~/Pictures/generate-image/`.
+Run `./generate.py --help` for every flag. Default filename `img_YYYYMMDD_HHMMSS_xxxx.png` under `~/Pictures/generate-image/`.
 
-## DAG orchestration (`--dag-file`)
+## Scalable DAG Orchestration (`--dag-file`, v3)
 
-For dependent / parallel pipelines — B uses A's output, same-style groups,
-"A then B/C/D", diamonds, multi-parent joins, or **any acyclic graph** — use a
-task-graph spec (YAML or JSON). The engine runs it at maximum parallelism
-(stdlib `graphlib.TopologicalSorter`), reusing the reliability layer per provider.
+Express 10–1000+ coherent assets in ~30 lines of YAML using declarative expansion,
+board auto-slicing, content-hash resume, and automatic QA artifacts:
 
-- Each task: `id`, `prompt`, optional `provider` / `model` / `ratio` / `background` / `name`.
-- Edges = **union** of `depends_on: [ids]` and any ref `"@id"` (= use that task's
-  output image as input → implicit dependency). Multiple `@refs` on one task = a
-  **join** compositing several upstream outputs (multi-image).
-- `--on-failure skip` (default: a failed task's descendants are skipped, independent
-  branches keep running) or `fail-fast` (abort not-yet-started tasks).
-- Each task's image → `~/Pictures/generate-image/{name or id}.png`.
+- **Shared DNA (zero repetition, zero drift):** `vars:` (`--var KEY=VALUE`), `defaults:`, `blocks:` (`{{blocks.style}}`), and structured 6-layer `spec:` (`deliverable`, `subject`, `info_points`, `composition`, `style`, `lighting`, `context`, `negatives`).
+- **Parametric Scale:** `matrix:` Cartesian product (with object dims & `exclude:` rules + auto `tags`), `foreach:` list expansion, and `provider_pool:` round-robin sharding.
+- **Board Auto-Slicing:** Declare `grid: "3x3"` or `grid: {rows: 2, cols: 3, trim_pct: 2.0, labels: [...]}` on any task; downstream tasks reference panels via `@board:C` or `@board[2]`.
+- **Resilience & Staged Execution:** `--resume` (content-hash `.dag-manifest.json` hashing prompt + params + resolved upstream ref file bytes so anchor changes auto-invalidate descendants), `--only-roots` / `--stage` / `--until` / `--only`, and `--max-cost CNY`.
+- **Automatic Review Artifacts (opt out with `--no-gallery`):** `contact_sheet.png` (paginated ≤16 cells for Agent vision QA) and offline interactive `gallery.html` (stage/tag filters, Light/Dark/Checkerboard RGBA switcher, lightbox prompt inspector, ★ Keep / ✕ Reject export).
 
-```yaml
-# pipeline.yaml — A generates; B restyles A; C/D branch off A; E joins C+D
-tasks:
-  - {id: A, prompt: "a lighthouse at dawn, flat vector", ratio: "16:9"}
-  - {id: B, prompt: "same scene at night",   refs: ["@A"]}
-  - {id: C, prompt: "close-up of the lamp",  refs: ["@A"]}
-  - {id: D, prompt: "wide establishing shot", refs: ["@A"]}
-  - {id: E, prompt: "diptych poster",         refs: ["@C", "@D"]}   # multi-parent join
-```
-
-```bash
-uv run generate-image --dag-file examples/bytedance-logos.yaml --concurrency 3   # runnable example
-uv run generate-image --dag-file my-graph.json --on-failure fail-fast            # JSON also works
-```
-
-See `examples/bytedance-logos.yaml` for a full runnable spec (10 parallel logos).
-`--batch-file` is just the zero-edge special case of a DAG.
+See runnable specs: [`examples/short-drama-storyboard.yaml`](examples/short-drama-storyboard.yaml) and [`examples/bytedance-logos.yaml`](examples/bytedance-logos.yaml).
 
 ## Bounded control flows (`--flow-file`)
 

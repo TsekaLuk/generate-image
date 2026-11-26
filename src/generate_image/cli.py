@@ -34,8 +34,10 @@ from pathlib import Path
 
 import httpx
 
+from . import board
 from . import dag
 from . import flow
+from . import gallery
 from . import probe
 from . import __version__ as PKG_VERSION
 from .providers import (
@@ -1040,7 +1042,8 @@ def _animation_fields(raw: bytes) -> dict:
 
 def _write_metadata(png_path: Path, raw: bytes, *, prompt: str, provider: str,
                     model: str, ratio: str, background: str | None,
-                    refs: list[str], quality: str | None = None) -> None:
+                    refs: list[str], quality: str | None = None,
+                    stage: str | None = None, tags: dict | None = None) -> None:
     """Write a <name>.json sidecar next to a generated image (opt out via --no-metadata).
 
     Dimensions are decoded from the exact bytes that were written, via
@@ -1062,6 +1065,10 @@ def _write_metadata(png_path: Path, raw: bytes, *, prompt: str, provider: str,
         **_animation_fields(raw),
         "version": PKG_VERSION,
     }
+    if stage:
+        meta["stage"] = stage
+    if tags:
+        meta["tags"] = dict(tags)
     png_path.with_suffix(".json").write_text(
         json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
     )
@@ -1322,6 +1329,28 @@ def parse_args() -> argparse.Namespace:
                     help="--dag-file failure policy: 'skip' (skip a failed task's "
                          "descendants, keep independent branches) or 'fail-fast' (abort "
                          "not-yet-started tasks). Default: skip.")
+    ap.add_argument("--var", action="append", default=None, metavar="KEY=VALUE",
+                    help="--dag-file template variable override (repeatable), e.g. "
+                         "--var anchor=/path/to/winner.png.")
+    ap.add_argument("--resume", action="store_true",
+                    help="--dag-file content-hash resume: skip completed tasks whose "
+                         "prompt/params/upstream ref bytes match .dag-manifest.json.")
+    ap.add_argument("--stage", action="append", default=None,
+                    help="--dag-file filter: run only tasks in the named stage(s) "
+                         "(plus required upstream ancestors). Repeatable.")
+    ap.add_argument("--only", default=None, metavar="ID[,ID...]",
+                    help="--dag-file filter: comma-separated task id(s) to run/rerun "
+                         "(plus required upstream ancestors).")
+    ap.add_argument("--only-roots", action="store_true",
+                    help="--dag-file filter: run only root tasks (anchors/boards with "
+                         "no upstream dependencies).")
+    ap.add_argument("--until", default=None, metavar="ID",
+                    help="--dag-file filter: run target task ID and its ancestors only.")
+    ap.add_argument("--max-cost", type=float, default=None, metavar="CNY",
+                    help="--dag-file hard budget ceiling in ¥; aborts before sending any "
+                         "request if the estimated DAG spend exceeds this value.")
+    ap.add_argument("--no-gallery", action="store_true",
+                    help="--dag-file: skip auto-generating contact_sheet.png and gallery.html.")
     return ap.parse_args()
 
 
@@ -1338,6 +1367,35 @@ def _read_batch_prompts(batch_file: str) -> list[str]:
     return prompts
 
 
+def _parse_cli_vars(raw_vars: list[str] | None) -> dict[str, str]:
+    parsed: dict[str, str] = {}
+    for item in raw_vars or []:
+        if "=" not in item:
+            sys.exit(f"error: --var expects KEY=VALUE, got {item!r}")
+        k, v = item.split("=", 1)
+        k = k.strip()
+        if not k:
+            sys.exit(f"error: --var key cannot be empty in {item!r}")
+        parsed[k] = v
+    return parsed
+
+
+def _load_filtered_dag(args) -> list[dag.Task]:
+    cli_vars = _parse_cli_vars(getattr(args, "var", None))
+    tasks = dag.load_dag(args.dag_file, cli_vars=cli_vars)
+    stages = set(getattr(args, "stage", None) or ()) or None
+    raw_only = getattr(args, "only", None)
+    only_ids = {s.strip() for s in raw_only.split(",") if s.strip()} if raw_only else None
+    only_roots = bool(getattr(args, "only_roots", False))
+    until_id = getattr(args, "until", None)
+    if stages or only_ids or only_roots or until_id:
+        tasks = dag.filter_tasks(
+            tasks, stages=stages, only_ids=only_ids,
+            only_roots=only_roots, until_id=until_id,
+        )
+    return tasks
+
+
 def _resolve_task_provider(task: dag.Task, args, *, allow_unconfigured: bool = False) -> Provider:
     """Resolve a DAG node's explicit provider or route an implicit/auto node."""
     requested = task.provider or AUTO_PROVIDER
@@ -1351,7 +1409,8 @@ def _resolve_task_provider(task: dag.Task, args, *, allow_unconfigured: bool = F
                 ref_count=len(task.refs),
                 background=task.background,
                 seed=args.seed,
-                quality=args.quality,
+                quality=task.quality or args.quality,
+                gif=task.gif,
                 allow_unconfigured=allow_unconfigured,
             )
         except ValueError as exc:
@@ -1458,7 +1517,7 @@ def _dry_run_plan(args) -> None:
         return
     if args.dag_file:
         try:
-            tasks = dag.load_dag(args.dag_file)
+            tasks = _load_filtered_dag(args)
         except dag.DagError as e:
             sys.exit(f"error: {e}")
         print("→ dry-run: no API call, no key required", file=sys.stderr)
@@ -1468,11 +1527,18 @@ def _dry_run_plan(args) -> None:
         for t in tasks:
             provider = _resolve_task_provider(t, args, allow_unconfigured=True)
             prov = provider.name
-            model = t.model or provider.default_model
+            model = t.model or (provider.gif_models[0] if (t.gif and provider.gif_models) else provider.default_model)
             ratio = t.ratio or DEFAULT_RATIO
-            print(f"→   {t.id}: provider={prov} model={model} ratio={ratio}", file=sys.stderr)
+            extra = ""
+            if t.stage:
+                extra += f" stage={t.stage}"
+            if t.grid:
+                extra += f" grid={t.grid.rows}x{t.grid.cols}"
+            if t.gif:
+                extra += " gif=true"
+            print(f"→   {t.id}: provider={prov} model={model} ratio={ratio}{extra}", file=sys.stderr)
             json_tasks.append({"id": t.id, "provider": prov, "model": model,
-                               "ratio": ratio})
+                               "ratio": ratio, "stage": t.stage, "tags": t.tags})
             routed.append(prov)
         counts = Counter(routed)
         print(f"→ images:   {len(tasks)}", file=sys.stderr)
@@ -1626,7 +1692,7 @@ def _run_dag_file(args, out_dir: Path) -> None:
     """Run a task-graph spec (--dag-file): build per-provider reliability, execute
     the DAG at max parallelism, and report a per-task summary."""
     try:
-        tasks = dag.load_dag(args.dag_file)
+        tasks = _load_filtered_dag(args)
     except dag.DagError as e:
         sys.exit(f"error: {e}")
 
@@ -1642,6 +1708,17 @@ def _run_dag_file(args, out_dir: Path) -> None:
                      f"choose from {sorted(VALID_RATIOS)}")
 
     task_providers = {t.id: _resolve_task_provider(t, args) for t in tasks}
+
+    # Hard budget ceiling check (--max-cost) before any request is sent.
+    max_cost = getattr(args, "max_cost", None)
+    if max_cost is not None:
+        est_counts = Counter(task_providers[t.id].name for t in tasks)
+        est_total, _billed, _varies = _billed_cost(est_counts, None, args.quality)
+        if est_total is not None and est_total > max_cost:
+            sys.exit(
+                f"error: DAG estimated cost ≈¥{est_total:.2f} over {len(tasks)} task(s) "
+                f"exceeds --max-cost ¥{max_cost:g}. Nothing was sent."
+            )
 
     # Warn ONCE per distinct routed provider that ignores --seed (outside the
     # worker threads), instead of once per task.
@@ -1661,13 +1738,23 @@ def _run_dag_file(args, out_dir: Path) -> None:
 
     def execute(task: dag.Task, refs: list[str]) -> bytes:
         provider = task_providers[task.id]
-        model = task.model or provider.default_model
-        provider = apply_model_dialect(provider, model)
+        if task.gif:
+            model = task.model or (provider.gif_models[0] if provider.gif_models else provider.default_model)
+            provider = apply_gif_dialect(apply_model_dialect(provider, model))
+            gif_opts: dict | None = {}
+            if task.frames is not None:
+                gif_opts["frame_count"] = task.frames
+            if task.frame_ms is not None:
+                gif_opts["frame_duration_ms"] = task.frame_ms
+        else:
+            model = task.model or provider.default_model
+            provider = apply_model_dialect(provider, model)
+            gif_opts = None
         ratio = task.ratio or DEFAULT_RATIO
+        quality = task.quality or args.quality
         if provider.key_env not in keys:
             keys[provider.key_env] = require_key(provider.key_env)
         key = keys[provider.key_env]
-        # per-provider rate limit + AIMD limiter, shared across all tasks of that provider
         bucket = buckets.setdefault(provider.name, TokenBucket(provider.rpm))
         limiter = limiters.setdefault(provider.name, AdaptiveConcurrency(concurrency, concurrency))
         idem = new_idempotency_key()
@@ -1680,9 +1767,11 @@ def _run_dag_file(args, out_dir: Path) -> None:
         def attempt() -> bytes:
             if refs:
                 return provider_edit(provider, task.prompt, model, refs, ratio, key,
-                                     client, background=task.background, idem_key=idem, quality=args.quality)
+                                     client, background=task.background, idem_key=idem,
+                                     quality=quality, gif=gif_opts)
             return provider_generate(provider, task.prompt, model, ratio, key, client,
-                                     background=task.background, idem_key=idem, seed=args.seed, quality=args.quality)
+                                     background=task.background, idem_key=idem, seed=args.seed,
+                                     quality=quality, gif=gif_opts)
 
         with limiter.slot():
             bucket.acquire()
@@ -1694,55 +1783,99 @@ def _run_dag_file(args, out_dir: Path) -> None:
 
     try:
         results = dag.run_dag(tasks, execute, out_dir=out_dir,
-                              concurrency=concurrency, on_failure=args.on_failure)
+                              concurrency=concurrency, on_failure=args.on_failure,
+                              resume=bool(getattr(args, "resume", False)))
     except dag.DagError as e:
         sys.exit(f"error: {e}")
     finally:
         client.close()
 
     json_items: list[dict] = []
-    n_ok = n_fail = n_skip = 0
+    gallery_items: list[dict] = []
+    n_ok = n_cached = n_fail = n_skip = 0
     for t in tasks:
         r = results[t.id]
         line = f"→ {t.id}: {r.status}"
         if r.output_path:
             line += f" -> {r.output_path}"
+        if r.slices:
+            line += f"  (sliced {len(r.slices)} panels)"
         if r.error:
             line += f"  ({r.error})"
         print(line, file=sys.stderr)
         n_ok += r.status == dag.SUCCESS
+        n_cached += r.status == dag.CACHED
         n_fail += r.status == dag.FAILED
         n_skip += r.status == dag.SKIPPED
-        # sidecars are written here (from run_dag's results + the task specs) so
-        # dag.py stays generic and free of image-gen knowledge.
-        if not args.no_metadata and r.status == dag.SUCCESS and r.output_path:
+        provider = task_providers[t.id]
+        prov_name = provider.name
+        model = t.model or (provider.gif_models[0] if (t.gif and provider.gif_models) else provider.default_model)
+        w = h = frames_n = 0
+        if r.status in (dag.SUCCESS, dag.CACHED) and r.output_path:
             png = Path(r.output_path)
             try:
                 raw = png.read_bytes()
             except OSError:
                 raw = b""
             if raw:
-                provider = task_providers[t.id]
-                prov_name = provider.name
-                model = t.model or provider.default_model
-                _write_metadata(png, raw, prompt=t.prompt, provider=prov_name, model=model,
-                                ratio=t.ratio or DEFAULT_RATIO, background=t.background,
-                                refs=list(t.refs))
-        json_items.append({"id": t.id, "ok": r.status == dag.SUCCESS,
-                           "path": r.output_path, "error": r.error})
-    print(f"dag: {n_ok} ok, {n_fail} failed, {n_skip} skipped ({len(tasks)} total)",
+                w, h, _ = probe.image_dims(raw)
+                frames_n = len(probe.gif_frames(raw))
+                if not args.no_metadata and r.status == dag.SUCCESS:
+                    _write_metadata(png, raw, prompt=t.prompt, provider=prov_name, model=model,
+                                    ratio=t.ratio or DEFAULT_RATIO, background=t.background,
+                                    refs=list(t.refs), quality=t.quality or args.quality,
+                                    stage=t.stage, tags=t.tags)
+        is_ok = r.status in (dag.SUCCESS, dag.CACHED)
+        item_json: dict = {"id": t.id, "ok": is_ok, "path": r.output_path, "error": r.error}
+        if r.status == dag.CACHED:
+            item_json["cached"] = True
+        if r.slices:
+            item_json["slices"] = r.slices
+        json_items.append(item_json)
+        gallery_items.append({
+            "id": t.id, "status": r.status, "ok": is_ok, "path": r.output_path,
+            "provider": prov_name, "model": model, "ratio": t.ratio or DEFAULT_RATIO,
+            "width": w, "height": h, "stage": t.stage or "", "tags": t.tags,
+            "prompt": t.prompt, "refs": list(t.refs), "error": r.error or "",
+            "frames": frames_n,
+        })
+        for sl_label, sl_path in r.slices.items():
+            gallery_items.append({
+                "id": f"{t.id}:{sl_label}", "status": r.status, "ok": True,
+                "path": sl_path, "provider": prov_name, "model": model,
+                "ratio": t.ratio or DEFAULT_RATIO, "width": 0, "height": 0,
+                "stage": t.stage or "", "tags": {**t.tags, "panel": sl_label},
+                "prompt": f"[slice {sl_label} from {t.id}] {t.prompt}",
+                "refs": [r.output_path] if r.output_path else [], "error": "", "frames": 0,
+            })
+
+    summary_cached = f", {n_cached} cached" if n_cached else ""
+    print(f"dag: {n_ok} ok{summary_cached}, {n_fail} failed, {n_skip} skipped ({len(tasks)} total)",
           file=sys.stderr)
-    # Only tasks that actually ran (succeeded or failed) issue a billed call;
-    # skipped descendants never reach the network.
     billed_counts = Counter(
         task_providers[t.id].name
         for t in tasks if results[t.id].status in (dag.SUCCESS, dag.FAILED)
     )
     if billed_counts:
         print(f"→ spent: {_cost_phrase(billed_counts, quality=args.quality)}", file=sys.stderr)
+
+    no_gallery = bool(getattr(args, "no_gallery", False))
+    if not no_gallery and (n_ok + n_cached) >= 2:
+        try:
+            title = Path(args.dag_file).stem
+            gal_path = gallery.build_gallery(gallery_items, out_dir, title=title)
+            sheets = board.build_contact_sheet(
+                gallery_items, out_dir / "contact_sheet.png", title=title,
+            )
+            print(f"→ gallery: {gal_path}", file=sys.stderr)
+            for s in sheets:
+                print(f"→ sheet:   {s}", file=sys.stderr)
+        except Exception as exc:  # noqa: BLE001 - gallery is best-effort DX
+            print(f"→ warning: gallery/contact-sheet skipped: {exc}", file=sys.stderr)
+
     if args.json:
         print(json.dumps(json_items, ensure_ascii=False))
-    if n_ok == 0:
+    if (n_ok + n_cached) == 0:
         sys.exit("error: no dag task produced an image")
     if n_fail or n_skip:
         sys.exit(1)  # partial completion -> nonzero exit
