@@ -86,7 +86,10 @@ def find_browser() -> str:
 def _to_file_uri(path_str: str) -> str:
     if path_str.startswith(("http://", "https://", "data:", "file://")):
         return path_str
-    return Path(path_str).expanduser().resolve().as_uri()
+    p = Path(path_str).expanduser().resolve()
+    if p.is_file():
+        return _to_data_uri(str(p))
+    return p.as_uri()
 
 
 def _to_data_uri(path_str: str) -> str:

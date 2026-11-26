@@ -63,8 +63,7 @@ def test_interpolate_refs_supports_index_id_and_data_uri(tmp_path):
         [str(img)],
         {"hero": str(img)},
     )
-    assert img.resolve().as_uri() in out
-    assert "data:image/png;base64," in out
+    assert out.count("data:image/png;base64,") == 3
 
 
 def test_infer_svg_dimensions():
