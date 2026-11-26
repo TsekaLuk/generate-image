@@ -511,6 +511,30 @@ def provider_generate_sequence(provider: Provider, prompt: str, model: str,
                                    provider_name=provider.name)
 
 
+def _warn_if_transparent_ref(data: bytes, label: str) -> None:
+    """Warn when a --ref image carries transparent RGBA pixels.
+
+    Vision preprocessors frequently flatten alpha onto black, which silently
+    erases dark strokes in logos/line-art and causes severe downstream drift.
+    """
+    try:
+        import io
+        from PIL import Image
+        with Image.open(io.BytesIO(data)) as im:
+            if im.mode in ("RGBA", "LA") or (im.mode == "P" and "transparency" in im.info):
+                rgba = im.convert("RGBA")
+                alpha_min, _ = rgba.getchannel("A").getextrema()
+                if alpha_min < 250:
+                    print(
+                        f"warning: --ref '{label}' has transparent alpha pixels (min_alpha={alpha_min}). "
+                        "Upstream vision encoders may flatten transparency onto black and erase dark strokes; "
+                        "prefer an opaque solid-background master as --ref and keep transparent RGBA as a leaf output.",
+                        file=sys.stderr,
+                    )
+    except Exception:
+        pass
+
+
 def _read_ref(ref: str, client: httpx.Client) -> tuple[bytes, str, str]:
     """Resolve a URL or local path to (bytes, mime, filename), with a 10MB cap."""
     if ref.startswith(("http://", "https://")):
@@ -526,6 +550,7 @@ def _read_ref(ref: str, client: httpx.Client) -> tuple[bytes, str, str]:
         fname = p.name
     if len(data) > MAX_REF_BYTES:
         sys.exit(f"error: --ref image exceeds 10MB cap (got {len(data) / 1024 / 1024:.1f}MB)")
+    _warn_if_transparent_ref(data, fname)
     return data, _MIME_BY_EXT.get(ext, "image/png"), fname
 
 

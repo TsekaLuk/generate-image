@@ -283,3 +283,19 @@ def test_cli_dag_max_cost_aborts_before_network(tmp_path, monkeypatch):
     with pytest.raises(SystemExit) as ei:
         generate.main()
     assert "--max-cost" in str(ei.value)
+
+
+def test_read_ref_warns_on_transparent_rgba_only(tmp_path, capsys):
+    trans = tmp_path / "logo_rgba.png"
+    trans.write_bytes(_make_png(w=20, h=20, color=(0, 0, 0, 0), mode="RGBA"))
+    opaque = tmp_path / "logo_rgb.png"
+    opaque.write_bytes(_make_png(w=20, h=20, color=(255, 255, 255), mode="RGB"))
+
+    with httpx.Client(trust_env=False) as client:
+        generate._read_ref(str(opaque), client)
+        assert capsys.readouterr().err == ""
+
+        generate._read_ref(str(trans), client)
+        err = capsys.readouterr().err
+        assert "transparent alpha pixels" in err
+        assert "logo_rgba.png" in err

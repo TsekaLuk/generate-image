@@ -59,13 +59,21 @@ Before compiling prompts for a specific visual genre, read the matching playbook
 - **N-in-1 Concept Boards & Short-Drama (短剧) 3×3 Storyboards** → [`playbooks/board-storyboard.md`](playbooks/board-storyboard.md)
 - **Coherent Character / Storybook Illustration Decks** → [`playbooks/series-storybook.md`](playbooks/series-storybook.md)
 
-### 3. Harness-Native Agent Visual QA Loop (No External VLM Required)
+### 3. Harness-Native Agent Visual QA Loop (Strict Gate — Zero Drift Tolerance)
 
-Use native multimodal vision (`read_file`) as the quality gate:
-1. **Anchor / Board Stage:** Run `--stage anchors --resume` (or `--only-roots`), inspect anchors or `2x3` / `3x3` board with `read_file`. Pick the strongest direction.
-2. **Scale Fan-Out:** Bind the winner (`--var anchor=...` or `@board:C`) and run `--resume` to expand the full matrix/foreach DAG.
-3. **One-Shot Batch Audit:** Inspect the auto-generated `contact_sheet.png` (up to 16 labeled cells per sheet) in a single vision call. Surgically rerun outliers via `--only id1,id2 --resume`.
-4. **Curated Delivery:** Present top picks alongside the offline interactive `gallery.html`.
+You have native multimodal vision (`read_file`). **Never treat "HTTP 200" as "accepted"**, and **never rationalize visual drift**:
+
+1. **Strict Stage Gating (NEVER skip anchor inspection):**
+   - Run **Stage 1 (`--stage board`)** → inspect `board.png` at full resolution → select the strongest cell.
+   - Run **Stage 2 (`--stage anchor`)** to produce an **OPAQUE solid-background canonical master** → inspect the master **side-by-side** with the source cell (`read_file` both) BEFORE fanning out Stage 3!
+   - **CRITICAL RGBA LANDMINE (Empirically Verified):** **NEVER feed a `--background transparent` RGBA PNG as `--ref` into downstream img2img nodes!** Transparent PNGs with dark/black strokes often have `(0,0,0,0)` corners; upstream vision encoders flatten alpha onto black, causing dark logo elements to vanish and trigger catastrophic downstream drift. Always keep the canonical `--ref` anchor on a clean **opaque solid white/light background**, and generate the `--background transparent` RGBA file as a **leaf deliverable**!
+2. **Mandatory 5-Point Visual Audit Rubric (Hard Reject on ANY failure):**
+   - **① Exact Geometric Fidelity:** Compare every output's logo/subject stroke-for-stroke against the opaque master anchor. If any shape vanished, morphed, or recolored unintentionally → **HARD REJECT & REGENERATE** (never excuse drift!). When applying a dark-ink logo anchor onto a dark physical/UI surface (black bookcloth, blackened aluminum, dark-mode UI), explicitly specify its dark-mode ink treatment (e.g. warm-white foil wings + accent bar, no white box behind it) while locking geometry.
+   - **② Star-Topology Ref Hygiene:** Downstream touchpoints should reference **ONE** clean opaque master anchor — do not chain noisy composite spec sheets into 7 downstream nodes where errors multiply.
+   - **③ Environment Variety (No Shared-Prop Cliché):** Put brand DNA (logo geometry, color system, typographic school) in shared `blocks:`, NEVER put a single physical prop (like "travertine stone") in a shared block across all mockups.
+   - **④ Typography & Spelling Zero-Defect:** Read every Chinese/English glyph and hex code at full resolution (never rely solely on tiny contact-sheet thumbnails for text QA).
+   - **⑤ Art-Director Taste Bar:** Ask honestly — *"Would a senior design director reject this as generic AI mockup slop?"* If yes, refine the prompt and surgically rerun with `--only id1,id2 --resume` before presenting to the user!
+3. **Curated Delivery:** Only after passing full-resolution QA across all key assets, present the verified deliverables alongside `contact_sheet.png` and the offline interactive `gallery.html`.
 
 ---
 
