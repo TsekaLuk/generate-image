@@ -56,6 +56,11 @@ def _detect_bg_color(rgba: Image.Image) -> tuple[int, int, int] | None:
     return (255, 255, 255)
 
 
+def _flat_pixels(im: Image.Image) -> list:
+    fn = getattr(im, "get_flattened_data", None)
+    return list(fn()) if callable(fn) else list(im.getdata())
+
+
 def _quantize_foreground_layers(
     im: Image.Image, *, max_colors: int = 4, bg_tol: int = 34, min_area_ratio: float = 0.0012
 ) -> list[tuple[tuple[int, int, int], Image.Image]]:
@@ -63,7 +68,7 @@ def _quantize_foreground_layers(
     rgba = im.convert("RGBA")
     w, h = rgba.size
     bg = _detect_bg_color(rgba)
-    px = list(rgba.getdata())
+    px = _flat_pixels(rgba)
 
     fg_mask = [False] * (w * h)
     fg_rgb: list[tuple[int, int, int]] = []
@@ -78,11 +83,12 @@ def _quantize_foreground_layers(
     if not fg_rgb:
         raise TraceError("no foreground pixels found to vectorize")
 
-    # Erode the foreground mask by 2px strictly for palette discovery so 1-2px
-    # anti-aliasing edge halos (gray transition pixels between dark ink and
-    # white backdrop) never pollute the discovered flat brand colors.
+    # Erode foreground by 2px strictly for palette discovery so 1-2px anti-aliased
+    # edge halos never pollute flat brand colors, then bucket into a 512-cell 3D RGB
+    # histogram so small vivid accent strokes (e.g. a 0.5% vermilion seal dot) are
+    # never smeared into dark ink by median-cut.
     fg_img = Image.frombytes("L", (w, h), bytes(255 if f else 0 for f in fg_mask))
-    interior = list(fg_img.filter(ImageFilter.MinFilter(size=5)).getdata())
+    interior = _flat_pixels(fg_img.filter(ImageFilter.MinFilter(size=5)))
     interior_rgb = [
         (px[i][0], px[i][1], px[i][2])
         for i, v in enumerate(interior)
@@ -90,27 +96,29 @@ def _quantize_foreground_layers(
     ]
     palette_src = interior_rgb if len(interior_rgb) >= 64 else fg_rgb
 
-    # Quantize foreground samples via Pillow MEDIANCUT on a compact strip image
-    sample = palette_src if len(palette_src) <= 60000 else palette_src[:: max(1, len(palette_src) // 60000)]
-    strip = Image.new("RGB", (len(sample), 1))
-    strip.putdata(sample)
-    k = max(4, min(max_colors * 3, 16))
-    q = strip.quantize(colors=k, method=Image.Quantize.MEDIANCUT)
-    pal = q.getpalette() or []
-    counts = Counter(q.getdata())
+    buckets: dict[tuple[int, int, int], list[int]] = {}
+    for r, g, b in palette_src:
+        key = (r >> 5, g >> 5, b >> 5)
+        acc = buckets.get(key)
+        if acc is None:
+            buckets[key] = [r, g, b, 1]
+        else:
+            acc[0] += r
+            acc[1] += g
+            acc[2] += b
+            acc[3] += 1
 
-    # Extract candidate palette colors sorted by frequency, then merge near-duplicates
-    # (which are usually anti-aliased edge transition pixels).
-    raw_colors: list[tuple[tuple[int, int, int], int]] = []
-    for pidx, cnt in counts.most_common():
-        rgb = (pal[pidx * 3], pal[pidx * 3 + 1], pal[pidx * 3 + 2])
-        raw_colors.append((rgb, cnt))
+    raw_colors: list[tuple[tuple[int, int, int], int]] = sorted(
+        (((v[0] // v[3], v[1] // v[3], v[2] // v[3]), v[3]) for v in buckets.values()),
+        key=lambda item: item[1],
+        reverse=True,
+    )
 
     merged: list[tuple[tuple[int, int, int], int]] = []
     for rgb, cnt in raw_colors:
         placed = False
         for mi, (mrgb, mcnt) in enumerate(merged):
-            if _rgb_dist(rgb, mrgb) < 62:
+            if _rgb_dist(rgb, mrgb) < 58:
                 merged[mi] = (mrgb, mcnt + cnt)
                 placed = True
                 break
