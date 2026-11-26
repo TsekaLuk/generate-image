@@ -78,11 +78,23 @@ def _quantize_foreground_layers(
     if not fg_rgb:
         raise TraceError("no foreground pixels found to vectorize")
 
+    # Erode the foreground mask by 2px strictly for palette discovery so 1-2px
+    # anti-aliasing edge halos (gray transition pixels between dark ink and
+    # white backdrop) never pollute the discovered flat brand colors.
+    fg_img = Image.frombytes("L", (w, h), bytes(255 if f else 0 for f in fg_mask))
+    interior = list(fg_img.filter(ImageFilter.MinFilter(size=5)).getdata())
+    interior_rgb = [
+        (px[i][0], px[i][1], px[i][2])
+        for i, v in enumerate(interior)
+        if v > 0
+    ]
+    palette_src = interior_rgb if len(interior_rgb) >= 64 else fg_rgb
+
     # Quantize foreground samples via Pillow MEDIANCUT on a compact strip image
-    sample = fg_rgb if len(fg_rgb) <= 60000 else fg_rgb[:: max(1, len(fg_rgb) // 60000)]
+    sample = palette_src if len(palette_src) <= 60000 else palette_src[:: max(1, len(palette_src) // 60000)]
     strip = Image.new("RGB", (len(sample), 1))
     strip.putdata(sample)
-    k = max(1, min(max_colors * 2, 12))
+    k = max(4, min(max_colors * 3, 16))
     q = strip.quantize(colors=k, method=Image.Quantize.MEDIANCUT)
     pal = q.getpalette() or []
     counts = Counter(q.getdata())
